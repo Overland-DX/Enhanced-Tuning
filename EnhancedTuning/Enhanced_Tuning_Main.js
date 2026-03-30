@@ -94,24 +94,23 @@
     const etInputsContainer = document.createElement('div');
     etInputsContainer.id = 'et-enhanced-inputs';
     etInputsContainer.innerHTML = `
-        <div style="display: flex; gap: 1px; flex-wrap: wrap; margin-bottom: 20px;">
-            <div style="flex: 1; min-width: 120px;">
+        <div style="display: flex; justify-content: center; gap: 15px; flex-wrap: wrap; margin-bottom: 20px;">
+            <div>
                 <label for="et-fm-lower" style="display: block; margin-bottom: 2px; font-weight: bold; text-transform: uppercase; color: var(--color-5); font-size: 12px; margin-left: 5px;">Lower FM limit</label>
                 <input type="text" id="et-fm-lower" value="${pluginConfig.fmLower}" class="input-text w-100 br-15" style="margin-top: 0; min-height: 40px; height: 40px;">
             </div>
-            <div style="flex: 1; min-width: 120px;">
+            <div>
                 <label for="et-fm-upper" style="display: block; margin-bottom: 2px; font-weight: bold; text-transform: uppercase; color: var(--color-5); font-size: 12px; margin-left: 5px;">Upper FM limit</label>
                 <input type="text" id="et-fm-upper" value="${pluginConfig.fmUpper}" class="input-text w-100 br-15" style="margin-top: 0; min-height: 40px; height: 40px;">
             </div>
         </div>
 
-        <!-- AM-raden -->
-        <div style="display: flex; gap: 1px; flex-wrap: wrap; margin-bottom: 0px;">
-            <div style="flex: 1; min-width: 120px;">
+        <div style="display: flex; justify-content: center; gap: 15px; flex-wrap: wrap; margin-bottom: 0px;">
+            <div>
                 <label for="et-am-lower" style="display: block; margin-bottom: 2px; font-weight: bold; text-transform: uppercase; color: var(--color-5); font-size: 12px; margin-left: 5px;">Lower AM limit</label>
                 <input type="text" id="et-am-lower" value="${pluginConfig.amLower}" class="input-text w-100 br-15" style="margin-top: 0; min-height: 40px; height: 40px;">
             </div>
-            <div style="flex: 1; min-width: 120px;">
+            <div>
                 <label for="et-am-upper" style="display: block; margin-bottom: 2px; font-weight: bold; text-transform: uppercase; color: var(--color-5); font-size: 12px; margin-left: 5px;">Upper AM limit</label>
                 <input type="text" id="et-am-upper" value="${pluginConfig.amUpper}" class="input-text w-100 br-15" style="margin-top: 0; min-height: 40px; height: 40px;">
             </div>
