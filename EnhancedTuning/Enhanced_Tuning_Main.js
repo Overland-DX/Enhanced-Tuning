@@ -1,16 +1,204 @@
-// Enhanced Tuning V2.06.2 – A plugin to switch bands and modify AM bandwidth options
-// -------------------------------------------------------------------------------------
-// Settings have been moved to /public/config.js
+// Enhanced Tuning V2.06.3 – Seamless Admin Takeover & Separate AM/FM Limits
 // -------------------------------------------------------------------------------------
 
-/* global document, socket, WebSocket, LAYOUT_STYLE, HIDE_ALL_BUTTONS, SHOW_LOOP_BUTTON, SHOW_BAND_RANGE, ENABLE_TUNE_STEP_FEATURE, TUNE_STEP_TIMEOUT_SECONDS, TUNING_STANDARD, ENABLE_AM_BW, FIRMWARE_TYPE, ENABLE_DEFAULT_AM_BW, DEFAULT_AM_BW_VALUE, ENABLED_BANDS, ENABLE_FREQUENCY_MEMORY, ENABLE_MW_STEP_TOGGLE, GRADIENT_BUTTONS */
+/* global document, socket, window, WebSocket, Event, LAYOUT_STYLE, HIDE_ALL_BUTTONS, SHOW_LOOP_BUTTON, SHOW_BAND_RANGE, ENABLE_TUNE_STEP_FEATURE, TUNE_STEP_TIMEOUT_SECONDS, TUNING_STANDARD, ENABLE_AM_BW, FIRMWARE_TYPE, ENABLE_DEFAULT_AM_BW, DEFAULT_AM_BW_VALUE, ENABLED_BANDS, ENABLE_FREQUENCY_MEMORY, ENABLE_MW_STEP_TOGGLE, GRADIENT_BUTTONS */
 (() => {
+  let pluginConfig = null;
+
+  // =========================================================================
+  // WEBSOCKET INTERCEPTOR - The ultimate gatekeeper
+  // =========================================================================
+  const originalWebSocketSend = WebSocket.prototype.send;
+  WebSocket.prototype.send = function(data) {
+      if (pluginConfig && pluginConfig.overrideServerTuningLimit && typeof data === 'string' && data.startsWith('T')) {
+          let freqMhz = parseInt(data.substring(1), 10) / 1000;
+          const isFm = freqMhz >= 64.0;
+          let modified = false;
+
+          if (isFm) {
+              if (freqMhz < pluginConfig.fmLower) { freqMhz = pluginConfig.fmLower; modified = true; }
+              else if (freqMhz > pluginConfig.fmUpper) { freqMhz = pluginConfig.fmUpper; modified = true; }
+          } else {
+              if (freqMhz < pluginConfig.amLower) { freqMhz = pluginConfig.amLower; modified = true; }
+              else if (freqMhz > pluginConfig.amUpper) { freqMhz = pluginConfig.amUpper; modified = true; }
+          }
+
+          if (modified) {
+              const freqElement = document.getElementById('data-frequency');
+              if (freqElement) {
+                  const freqText = freqElement.textContent;
+                  let currentFreq = parseFloat(freqText);
+                  if (freqText.toLowerCase().includes('khz')) currentFreq /= 1000;
+                  if (Math.abs(currentFreq - freqMhz) < 0.0001) return; // Prevent spamming
+              }
+              console.log(`[Enhanced Tuning] Tuning prevented. Snapped to: ${freqMhz} MHz`);
+              data = "T" + Math.round(freqMhz * 1000);
+          }
+      }
+      originalWebSocketSend.apply(this, arguments);
+  };
+
+  const fetchPluginConfig = async () => {
+    try {
+      const res = await fetch('/api/plugins/enhanced_tuning/config');
+      pluginConfig = await res.json();
+    } catch (err) {
+      console.error("[Enhanced Tuning] Could not load config", err);
+    }
+  };
+
+  // =========================================================================
+  // ADMIN PANEL TAKEOVER - Seamless integration with original design
+  // =========================================================================
+  const initAdminPanel = () => {
+    const globalLowerInput = document.getElementById('webserver-tuningLowerLimit');
+    const globalUpperInput = document.getElementById('webserver-tuningUpperLimit');
+    const origSwitchInput = document.getElementById('webserver-tuningLimit');
+    
+    if (!globalLowerInput || !globalUpperInput || !origSwitchInput || !pluginConfig) return;
+
+    const origSwitchContainer = origSwitchInput.closest('.switch');
+    const parentDiv = origSwitchContainer ? origSwitchContainer.parentNode : null;
+    if (!parentDiv) return;
+
+    const flexWrapper = document.createElement('div');
+    flexWrapper.style.cssText = 'display: flex; justify-content: flex-start; align-items: center; margin-bottom: 15px; gap: 40px; flex-wrap: wrap;';
+    
+    const leftSide = document.createElement('div');
+    leftSide.style.cssText = 'display: flex; align-items: center; gap: 10px;';
+    parentDiv.insertBefore(flexWrapper, origSwitchContainer);
+    leftSide.appendChild(origSwitchContainer);
+    
+    const lowerLimitLabel = document.querySelector('label[for="webserver-tuningLimit"]') || document.querySelector('label[for="webserver-tuningLowerLimit"]');
+    let sibling = flexWrapper.nextSibling;
+    while (sibling && sibling !== globalLowerInput && sibling.tagName !== 'INPUT') {
+        let toMove = sibling;
+        sibling = sibling.nextSibling;
+        if (toMove.tagName === 'BR') toMove.remove();
+        else leftSide.appendChild(toMove);
+    }
+
+    const rightSide = document.createElement('div');
+    rightSide.style.cssText = 'display: flex; align-items: center; gap: 10px;';
+    rightSide.innerHTML = `
+        <div class="switch">
+            <input type="checkbox" id="et-enable-override" ${pluginConfig.overrideServerTuningLimit ? 'checked' : ''}>
+            <label for="et-enable-override"></label>
+        </div>
+        <span style="font-weight: bold; text-transform: uppercase; color: var(--color-5); font-size: 13px; letter-spacing: 0.5px;">Enhanced-Plugin</span>
+    `;
+    
+    flexWrapper.appendChild(leftSide);
+    flexWrapper.appendChild(rightSide);
+
+    const etInputsContainer = document.createElement('div');
+    etInputsContainer.id = 'et-enhanced-inputs';
+    etInputsContainer.innerHTML = `
+        <div style="display: flex; gap: 1px; flex-wrap: wrap; margin-bottom: 20px;">
+            <div style="flex: 1; min-width: 120px;">
+                <label for="et-fm-lower" style="display: block; margin-bottom: 2px; font-weight: bold; text-transform: uppercase; color: var(--color-5); font-size: 12px; margin-left: 5px;">Lower FM limit</label>
+                <input type="text" id="et-fm-lower" value="${pluginConfig.fmLower}" class="input-text w-100 br-15" style="margin-top: 0; min-height: 40px; height: 40px;">
+            </div>
+            <div style="flex: 1; min-width: 120px;">
+                <label for="et-fm-upper" style="display: block; margin-bottom: 2px; font-weight: bold; text-transform: uppercase; color: var(--color-5); font-size: 12px; margin-left: 5px;">Upper FM limit</label>
+                <input type="text" id="et-fm-upper" value="${pluginConfig.fmUpper}" class="input-text w-100 br-15" style="margin-top: 0; min-height: 40px; height: 40px;">
+            </div>
+        </div>
+
+        <!-- AM-raden -->
+        <div style="display: flex; gap: 1px; flex-wrap: wrap; margin-bottom: 0px;">
+            <div style="flex: 1; min-width: 120px;">
+                <label for="et-am-lower" style="display: block; margin-bottom: 2px; font-weight: bold; text-transform: uppercase; color: var(--color-5); font-size: 12px; margin-left: 5px;">Lower AM limit</label>
+                <input type="text" id="et-am-lower" value="${pluginConfig.amLower}" class="input-text w-100 br-15" style="margin-top: 0; min-height: 40px; height: 40px;">
+            </div>
+            <div style="flex: 1; min-width: 120px;">
+                <label for="et-am-upper" style="display: block; margin-bottom: 2px; font-weight: bold; text-transform: uppercase; color: var(--color-5); font-size: 12px; margin-left: 5px;">Upper AM limit</label>
+                <input type="text" id="et-am-upper" value="${pluginConfig.amUpper}" class="input-text w-100 br-15" style="margin-top: 0; min-height: 40px; height: 40px;">
+            </div>
+        </div>
+    `;
+    
+    parentDiv.appendChild(etInputsContainer);
+
+    const origElementsToHide = [
+        globalLowerInput,
+        document.querySelector('label[for="webserver-tuningLowerLimit"]'),
+        globalUpperInput,
+        document.querySelector('label[for="webserver-tuningUpperLimit"]')
+    ];
+
+
+    const syncGlobalLimits = () => {
+        if (document.getElementById('et-enable-override').checked) {
+            const fmL = parseFloat(document.getElementById('et-fm-lower').value) || 64.0;
+            const amL = parseFloat(document.getElementById('et-am-lower').value) || 0.144;
+            const fmU = parseFloat(document.getElementById('et-fm-upper').value) || 108.0;
+            const amU = parseFloat(document.getElementById('et-am-upper').value) || 30.0;
+            
+            if (globalLowerInput) {
+                globalLowerInput.value = Math.min(fmL, amL);
+                globalLowerInput.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+            if (globalUpperInput) {
+                globalUpperInput.value = Math.max(fmU, amU);
+                globalUpperInput.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+        }
+    };
+
+    const toggleVisibility = () => {
+        const isEnhanced = document.getElementById('et-enable-override').checked;
+        etInputsContainer.style.display = isEnhanced ? 'block' : 'none';
+        
+        origElementsToHide.forEach(el => {
+            if (el) {
+                el.style.display = isEnhanced ? 'none' : '';
+                if (el.nextElementSibling && el.nextElementSibling.tagName === 'BR') {
+                    el.nextElementSibling.style.display = isEnhanced ? 'none' : '';
+                }
+            }
+        });
+        
+        if(isEnhanced) syncGlobalLimits();
+    };
+
+    document.getElementById('et-enable-override').addEventListener('change', toggleVisibility);['et-fm-lower', 'et-am-lower', 'et-fm-upper', 'et-am-upper'].forEach(id => {
+        document.getElementById(id).addEventListener('input', syncGlobalLimits);
+    });
+
+    toggleVisibility(); 
+
+    const saveBtn = document.getElementById('submit-config');
+    if (saveBtn) {
+        saveBtn.addEventListener('click', () => {
+            const newConfig = {
+                overrideServerTuningLimit: document.getElementById('et-enable-override').checked,
+                fmLower: parseFloat(document.getElementById('et-fm-lower').value),
+                fmUpper: parseFloat(document.getElementById('et-fm-upper').value),
+                amLower: parseFloat(document.getElementById('et-am-lower').value),
+                amUpper: parseFloat(document.getElementById('et-am-upper').value),
+            };
+            
+            fetch('/api/plugins/enhanced_tuning/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(newConfig)
+            }).then(res => res.json()).then(data => {
+                pluginConfig = newConfig;
+            }).catch(err => console.error("Error saving Enhanced Tuning config", err));
+        });
+    }
+
+    const pluginSettingsDiv = document.getElementById('plugin-settings');
+    if (pluginSettingsDiv && pluginSettingsDiv.innerText.includes('No plugin settings')) {
+        pluginSettingsDiv.innerText = 'Settings for Enhanced Tuning are directly integrated into the "Webserver -> Tuning options" panel.';
+    }
+  };
 
   const loadScript = (src) => {
     const script = document.createElement('script');
     script.src = src;
     document.head.appendChild(script);
-
     return new Promise((resolve, reject) => {
       script.onload = () => resolve();
       script.onerror = () => reject(new Error(`Script load error for ${src}`));
@@ -23,7 +211,6 @@
     link.type = 'text/css';
     link.href = '/public/Enhanced_Tuning.css';
     document.head.appendChild(link);
-    
     return new Promise((resolve, reject) => {
       link.onload = () => resolve();
       link.onerror = () => reject(new Error('Stylesheet load error for Enhanced_Tuning.css'));
@@ -38,85 +225,58 @@
         try {
           for (const rule of sheet.cssRules) {
             if (rule.selectorText && rule.selectorText.includes('.playbutton') && rule.style.backgroundImage) {
-              if (rule.style.backgroundImage.includes('linear-gradient')) {
-                return true;
-              }
+              if (rule.style.backgroundImage.includes('linear-gradient')) return true;
             }
           }
-        } catch (e) {
-          continue;
-        }
+        } catch (e) { continue; }
       }
       return false;
     };
 
     const styleCheckInterval = setInterval(() => {
       attempts++;
-      
       if (isGradientPluginActive()) {
         clearInterval(styleCheckInterval);
-        console.log('[Enhanced Tuning] Gradient plugin detected via CSS rules. Applying compatible styles.');
+        console.log('[Enhanced Tuning] Gradient plugin detected. Applying styles.');
         
         const styleElement = document.createElement('style');
         styleElement.textContent = `
-          .band-selector-button,
-          .am-view-button,
-          .sw-grid-button,
-          .loop-toggle-button {
+          .band-selector-button, .am-view-button, .sw-grid-button, .loop-toggle-button {
             background-image: linear-gradient(var(--color-4), var(--color-3));
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            transition: all 0.3s ease;
-            background-color: transparent;
-            opacity: 0.6;
+            transition: all 0.3s ease; background-color: transparent; opacity: 0.6;
           }
-          .band-selector-button.active-band,
-          .am-view-button.active-band,
-          .sw-grid-button.active-band,
-          .loop-toggle-button.active {
-            opacity: 1;
-          }
-          .band-selector-button:hover,
-          .am-view-button:hover,
-          .sw-grid-button:hover,
-          .loop-toggle-button:hover {
+          .band-selector-button.active-band, .am-view-button.active-band, .sw-grid-button.active-band, .loop-toggle-button.active { opacity: 1; }
+          .band-selector-button:hover, .am-view-button:hover, .sw-grid-button:hover, .loop-toggle-button:hover {
             background-image: linear-gradient(var(--color-3), var(--color-5));
-            box-shadow: 0 10px 15px rgba(0, 0, 0, 0.2);
-            transform: translateY(0.1px);
-            opacity: 1;
+            box-shadow: 0 10px 15px rgba(0, 0, 0, 0.2); transform: translateY(0.1px); opacity: 1;
           }
         `;
         document.head.appendChild(styleElement);
-        
       } else if (attempts >= maxAttempts) {
         clearInterval(styleCheckInterval);
-        console.log('[Enhanced Tuning] Gradient plugin not detected after timeout.');
       }
     }, 250);
   };
 
   const initializePlugin = () => {
-	checkForGradientPluginAndApplyStyles();
+    checkForGradientPluginAndApplyStyles();
     if (!ENABLE_AM_BW && (typeof console !== 'undefined')) {
-      if (ENABLE_DEFAULT_AM_BW) {
-        console.warn('[BandSelector] ENABLE_DEFAULT_AM_BW is set but ENABLE_AM_BW is false; default BW selection will be ignored.');
-      }
+      if (ENABLE_DEFAULT_AM_BW) console.warn('[BandSelector] ENABLE_DEFAULT_AM_BW set but ENABLE_AM_BW is false.');
     }
 
-    const FM_DX_TUNER_BW_OPTIONS = {
-      '3 kHz': 'W3000',
-      '4 kHz': 'W4000',
-      '6 kHz': 'W6000',
-      '8 kHz': 'W8000'
-    };
-
-    const AM_BW_MAPPING = {
-      '56000': 3,  // 56 kHz → 3 kHz
-      '64000': 4,  // 64 kHz → 4 kHz
-      '72000': 6,  // 72 kHz → 6 kHz
-      '84000': 8   // 84 kHz → 8 kHz
-    };
-
     if (typeof socket === 'undefined' || socket === null) return;
+
+    const dataFrequencyElement = document.getElementById('data-frequency');
+    const getCurrentFrequencyInMHz = () => { 
+      const freqText = dataFrequencyElement.textContent; 
+      let freqValue = parseFloat(freqText); 
+      if (freqText.toLowerCase().includes('khz')) freqValue /= 1000; 
+      return freqValue; 
+    };
+
+    const FM_DX_TUNER_BW_OPTIONS = { '3 kHz': 'W3000', '4 kHz': 'W4000', '6 kHz': 'W6000', '8 kHz': 'W8000' };
+    const AM_BW_MAPPING = { '56000': 3, '64000': 4, '72000': 6, '84000': 8 };
 
     const ALL_BANDS = {
       'AM_SUPER': { name: 'AM Super', start: 0.144, end: 27.0, displayUnit: 'MHz' },
@@ -147,33 +307,32 @@
       '15m':  { tune: 18.9,start: 18.9,end: 19.02,displayUnit: 'MHz'}, '13m':  { tune: 21.45,start:21.45,end:21.85,displayUnit: 'MHz'},
       '11m':  { tune: 25.67,start:25.67,end:26.1,displayUnit: 'MHz'}
     };
-    const amBandKeys = ['SW', 'MW', 'LW'];
+    const amBandKeys =['SW', 'MW', 'LW'];
 
-    let masterBwListTemplates = [];
-    const dataFrequencyElement = document.getElementById('data-frequency');
-    
-    const getCurrentFrequencyInMHz = () => { const freqText = dataFrequencyElement.textContent; let freqValue = parseFloat(freqText); if (freqText.toLowerCase().includes('khz')) { freqValue /= 1000; } return freqValue; };
+    let masterBwListTemplates =[];
+
     const initializeBwFilter = () => {
       const desktopBwList = document.querySelector('#data-bw .options');
       const mobileBwList = document.querySelector('#data-bw-phone .options');
 
-      if (desktopBwList) {
-          masterBwListTemplates = Array.from(desktopBwList.querySelectorAll('li')).map(li => li.cloneNode(true));
-      }
+      if (desktopBwList) masterBwListTemplates = Array.from(desktopBwList.querySelectorAll('li')).map(li => li.cloneNode(true));
       
       Object.entries(FM_DX_TUNER_BW_OPTIONS).forEach(([text, command]) => {
+        const value = command.replace('W', '');
+
         if (desktopBwList) {
           const newLi = document.createElement('li');
           newLi.textContent = text;
+          newLi.dataset.value = value;
           newLi.classList.add('fmdx-tuner-bw-option'); 
           newLi.style.display = 'none'; 
           addFmDxTunerClickListener(newLi, command);
           desktopBwList.appendChild(newLi);
         }
-
         if (mobileBwList) {
           const newLi = document.createElement('li');
           newLi.textContent = text;
+          newLi.dataset.value = value;
           newLi.classList.add('fmdx-tuner-bw-option');
           newLi.style.display = 'none';
           newLi.addEventListener('click', () => socket.send(command));
@@ -181,203 +340,183 @@
         }
       });
     };
-    const getDropdownRoot = (dropdownEl) =>
-    dropdownEl?.closest?.('.dropdown') || dropdownEl;
 
-    const findDropdownToggler = (root) => {
-    return (
-        root.querySelector('.selected') ||
-        root.querySelector('[data-toggle]') ||
-        root.querySelector('.dropdown-toggle') ||
-        root.querySelector('summary') || 
-        root
-    );
-    };
+    const getDropdownRoot = (dropdownEl) => dropdownEl?.closest?.('.dropdown') || dropdownEl;
+    const findDropdownToggler = (root) => root.querySelector('.selected') || root.querySelector('[data-toggle]') || root.querySelector('.dropdown-toggle') || root.querySelector('summary') || root;
     
     const bwRoot = document.getElementById('data-bw');
     if (bwRoot) {
-    bwRoot.addEventListener('mousedown', (e) => {
+      bwRoot.addEventListener('mousedown', (e) => {
         if ((e.target && e.target.closest('.options li'))) {
-        e.stopImmediatePropagation();
-        e.preventDefault();
+          e.stopImmediatePropagation();
+          e.preventDefault();
         }
-    }, { capture: true });
+      }, { capture: true });
     }
 
     let _prevIsAmMode = null;
+    
     const updateBwOptionsForMode = (freqInMHz) => {
-    if (!ENABLE_AM_BW) return;
+      if (!ENABLE_AM_BW) return;
 
-    const isAmMode = freqInMHz < 27.0;
+      const isAmMode = freqInMHz < 27.0;
 
-    const justLeftAmMode = _prevIsAmMode === true && !isAmMode;
-    if (justLeftAmMode) {
-        socket.send('W0');
-        const desktopSelectedText = document.querySelector('#data-bw .selected');
-        const mobileSelectedText = document.querySelector('#data-bw-phone .selected');
-        if (desktopSelectedText) desktopSelectedText.textContent = 'Auto';
-        if (mobileSelectedText) mobileSelectedText.textContent = 'Auto';
-    }
+      const justEnteredAmMode = _prevIsAmMode === false && isAmMode;
+      if (justEnteredAmMode) {
+        const lastBw = localStorage.getItem('lastKnownAmBw');
+        if (lastBw) setTimeout(() => { if (socket.readyState === WebSocket.OPEN) socket.send(`W${lastBw}`); }, 100);
+      }
 
-    const allBwItems = document.querySelectorAll('#data-bw .options li, #data-bw-phone .options li');
-    if (allBwItems.length === 0) return;
+      const justLeftAmMode = _prevIsAmMode === true && !isAmMode;
+      if (justLeftAmMode) {
+          socket.send('W0');
+          const desktopSelectedText = document.querySelector('#data-bw .selected');
+          const mobileSelectedText = document.querySelector('#data-bw-phone .selected');
+          if (desktopSelectedText) desktopSelectedText.textContent = 'Auto';
+          if (mobileSelectedText) mobileSelectedText.textContent = 'Auto';
+      }
 
-    const amValuesToShow = new Set(['0', ...Object.keys(AM_BW_MAPPING)]);
+      const allBwItems = document.querySelectorAll('#data-bw .options li, #data-bw-phone .options li');
+      if (allBwItems.length === 0) return;
 
-    const getOriginalText = (value) => {
-        const template = masterBwListTemplates.find(t => t.dataset.value === value);
-        return template ? template.textContent : null;
-    };
+      const amValuesToShow = new Set(['0', ...Object.keys(AM_BW_MAPPING)]);
 
-    allBwItems.forEach(li => {
-        const isTunerOption = li.classList.contains('fmdx-tuner-bw-option');
-        const value = li.dataset.value;
+      const getOriginalText = (value) => {
+          const template = masterBwListTemplates.find(t => t.dataset.value === value);
+          return template ? template.textContent : null;
+      };
 
-        if (isAmMode) {
-        if (FIRMWARE_TYPE === 'FM-DX-Tuner') {
-            li.style.display = isTunerOption ? '' : 'none';
-        } else { 
-            const isRelevant = !isTunerOption && amValuesToShow.has(value);
-            li.style.display = isRelevant ? '' : 'none';
-            if (isRelevant && AM_BW_MAPPING.hasOwnProperty(value)) {
-            li.textContent = `${AM_BW_MAPPING[value]} kHz`;
+      allBwItems.forEach(li => {
+          const isTunerOption = li.classList.contains('fmdx-tuner-bw-option');
+          const value = li.dataset.value;
+
+          if (isAmMode) {
+            if (FIRMWARE_TYPE === 'FM-DX-Tuner') {
+                li.style.display = isTunerOption ? '' : 'none';
+            } else { 
+                const isRelevant = !isTunerOption && amValuesToShow.has(value);
+                li.style.display = isRelevant ? '' : 'none';
+                if (isRelevant && AM_BW_MAPPING.hasOwnProperty(value)) li.textContent = `${AM_BW_MAPPING[value]} kHz`;
             }
-        }
-        } else { 
-        li.style.display = isTunerOption ? 'none' : '';
-        
-        if (!isTunerOption && value) {
-            const originalText = getOriginalText(value);
-            if (originalText) {
-            li.textContent = originalText;
+          } else { 
+            li.style.display = isTunerOption ? 'none' : '';
+            if (!isTunerOption && value) {
+                const originalText = getOriginalText(value);
+                if (originalText) li.textContent = originalText;
             }
-        }
-        }
-    });
+          }
+      });
 
-    if (isAmMode && FIRMWARE_TYPE === 'TEF6686_ESP32') {
-        const desktopBwList = document.querySelector('#data-bw .options');
-        const justEnteredAm = _prevIsAmMode !== true;
-        if (desktopBwList && ENABLE_DEFAULT_AM_BW && justEnteredAm && DEFAULT_AM_BW_VALUE) {
-        const targetLi = desktopBwList.querySelector(`li[data-value="${DEFAULT_AM_BW_VALUE}"]`);
-        if (targetLi) targetLi.click();
-        }
-    }
+      if (isAmMode && FIRMWARE_TYPE === 'TEF6686_ESP32') {
+          const desktopBwList = document.querySelector('#data-bw .options');
+          const justEnteredAm = _prevIsAmMode !== true;
+          if (desktopBwList && ENABLE_DEFAULT_AM_BW && justEnteredAm && DEFAULT_AM_BW_VALUE) {
+            const targetLi = desktopBwList.querySelector(`li[data-value="${DEFAULT_AM_BW_VALUE}"]`);
+            if (targetLi) targetLi.click();
+          }
+      }
 
-    _prevIsAmMode = isAmMode;
+      _prevIsAmMode = isAmMode;
     };
 
     const closeDropdown = (dropdownEl) => {
-    const root = dropdownEl.closest('.dropdown') || dropdownEl;
-    const options = root.querySelector('.options');
-    const selected = root.querySelector('.selected');
+      const root = dropdownEl.closest('.dropdown') || dropdownEl;
+      const options = root.querySelector('.options');
+      const selected = root.querySelector('.selected');
 
-    root.classList.remove('open','active','show');
-    dropdownEl.classList.remove('open','active','show');
-    options?.classList.remove('open','active','show');
+      root.classList.remove('open','active','show');
+      dropdownEl.classList.remove('open','active','show');
+      options?.classList.remove('open','active','show');
 
-    const details = root.tagName === 'DETAILS' ? root : root.querySelector('details');
-    if (details) details.open = false;
+      const details = root.tagName === 'DETAILS' ? root : root.querySelector('details');
+      if (details) details.open = false;
 
-    root.querySelectorAll('[aria-expanded="true"]').forEach(el => el.setAttribute('aria-expanded','false'));
-    selected?.setAttribute('aria-expanded','false');
+      root.querySelectorAll('[aria-expanded="true"]').forEach(el => el.setAttribute('aria-expanded','false'));
+      selected?.setAttribute('aria-expanded','false');
 
-    root.querySelectorAll('input[type="checkbox"], input[type="radio"]').forEach(inp => {
-        if (inp.checked) {
-        inp.checked = false;
-        inp.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-    });
+      root.querySelectorAll('input[type="checkbox"], input[type="radio"]').forEach(inp => {
+          if (inp.checked) { inp.checked = false; inp.dispatchEvent(new Event('change', { bubbles: true })); }
+      });
 
-    if (document.activeElement && root.contains(document.activeElement)) {
-        document.activeElement.blur();
-    }
-    selected?.blur?.();
+      if (document.activeElement && root.contains(document.activeElement)) document.activeElement.blur();
+      selected?.blur?.();
 
-    root.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      root.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 
-    if (options) {
-        const prev = options.getAttribute('style') || '';
-        const addSemi = prev && !prev.trim().endsWith(';') ? ';' : '';
-        options.setAttribute('style', prev + addSemi + 'display:none;');
-        setTimeout(() => {
-        const current = options.getAttribute('style') || '';
-        const cleaned = current.replace(/(^|;)\s*display\s*:\s*none\s*;?/i, ';').replace(/^;|;;/g, ';').trim();
-        if (cleaned) options.setAttribute('style', cleaned);
-        else options.removeAttribute('style');
-        }, 50);
-    }
+      if (options) {
+          const prev = options.getAttribute('style') || '';
+          const addSemi = prev && !prev.trim().endsWith(';') ? ';' : '';
+          options.setAttribute('style', prev + addSemi + 'display:none;');
+          setTimeout(() => {
+          const current = options.getAttribute('style') || '';
+          const cleaned = current.replace(/(^|;)\s*display\s*:\s*none\s*;?/i, ';').replace(/^;|;;/g, ';').trim();
+          if (cleaned) options.setAttribute('style', cleaned);
+          else options.removeAttribute('style');
+          }, 50);
+      }
     };
 
     const addClickListener = (element) => {
-    element.addEventListener('click', (ev) => {
-        ev.stopImmediatePropagation();
-        ev.preventDefault();
+      element.addEventListener('click', (ev) => {
+          ev.stopImmediatePropagation();
+          ev.preventDefault();
 
-        const bwDropdown = document.getElementById('data-bw');
-        if (!bwDropdown) return;
+          const bwDropdown = document.getElementById('data-bw');
+          if (!bwDropdown) return;
 
-        const root = getDropdownRoot(bwDropdown);
-        const toggler = findDropdownToggler(root);
-        const value = element.dataset.value;
+          const root = getDropdownRoot(bwDropdown);
+          const toggler = findDropdownToggler(root);
+          const value = element.dataset.value;
 
-        socket.send(`W${value}`);
+          socket.send(`W${value}`);
 
-        const selectedText = root.querySelector('.selected');
-        if (selectedText) selectedText.textContent = element.textContent;
+          const selectedText = root.querySelector('.selected');
+          if (selectedText) selectedText.textContent = element.textContent;
 
-        root.style.pointerEvents = 'none';
+          root.style.pointerEvents = 'none';
+          closeDropdown?.(bwDropdown);
 
-        closeDropdown?.(bwDropdown);
-
-        setTimeout(() => {
-        try {
-            if (root.tagName === 'DETAILS') {
-            root.open = false;
-            } else if (toggler) {
-            toggler.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-            toggler.setAttribute?.('aria-expanded', 'false');
+          setTimeout(() => {
+            try {
+                if (root.tagName === 'DETAILS') root.open = false;
+                else if (toggler) {
+                  toggler.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                  toggler.setAttribute?.('aria-expanded', 'false');
+                }
+                if (document.activeElement && root.contains(document.activeElement)) document.activeElement.blur();
+            } finally {
+                setTimeout(() => { root.style.pointerEvents = ''; }, 120);
             }
-
-            if (document.activeElement && root.contains(document.activeElement)) {
-            document.activeElement.blur();
-            }
-        } finally {
-            setTimeout(() => { root.style.pointerEvents = ''; }, 120);
-        }
-        }, 0);
-    }, { capture: true });
+          }, 0);
+      }, { capture: true });
     };
     
     const addFmDxTunerClickListener = (element, command) => {
-    element.addEventListener('click', (ev) => {
-        ev.stopImmediatePropagation();
-        ev.preventDefault();
-        const bwDropdown = document.getElementById('data-bw');
-        if (!bwDropdown) return;
-        const root = getDropdownRoot(bwDropdown);
-        const toggler = findDropdownToggler(root);
-        socket.send(command);
-        const selectedText = root.querySelector('.selected');
-        if (selectedText) selectedText.textContent = element.textContent;
-        root.style.pointerEvents = 'none';
-        closeDropdown?.(bwDropdown);
-        setTimeout(() => {
-        try {
-            if (root.tagName === 'DETAILS') {
-            root.open = false;
-            } else if (toggler) {
-            toggler.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-            toggler.setAttribute?.('aria-expanded', 'false');
+      element.addEventListener('click', (ev) => {
+          ev.stopImmediatePropagation();
+          ev.preventDefault();
+          const bwDropdown = document.getElementById('data-bw');
+          if (!bwDropdown) return;
+          const root = getDropdownRoot(bwDropdown);
+          const toggler = findDropdownToggler(root);
+          socket.send(command);
+          const selectedText = root.querySelector('.selected');
+          if (selectedText) selectedText.textContent = element.textContent;
+          root.style.pointerEvents = 'none';
+          closeDropdown?.(bwDropdown);
+          setTimeout(() => {
+            try {
+                if (root.tagName === 'DETAILS') root.open = false;
+                else if (toggler) {
+                  toggler.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                  toggler.setAttribute?.('aria-expanded', 'false');
+                }
+                if (document.activeElement && root.contains(document.activeElement)) document.activeElement.blur();
+            } finally {
+                setTimeout(() => { root.style.pointerEvents = ''; }, 120);
             }
-            if (document.activeElement && root.contains(document.activeElement)) {
-            document.activeElement.blur();
-            }
-        } finally {
-            setTimeout(() => { root.style.pointerEvents = ''; }, 120);
-        }
-        }, 0);
-    }, { capture: true });
+          }, 0);
+      }, { capture: true });
     };
     
     const LOOP_STORAGE_KEY = 'bandSelectorLoopState';
@@ -385,10 +524,7 @@
     const FULL_SW_MODE_KEY = 'bandSelectorFullSwMode';
 
     let loopEnabled = localStorage.getItem(LOOP_STORAGE_KEY) === 'true';
-    if (!SHOW_LOOP_BUTTON) {
-        loopEnabled = false;
-        localStorage.setItem(LOOP_STORAGE_KEY, 'false');
-    }
+    if (!SHOW_LOOP_BUTTON) { loopEnabled = false; localStorage.setItem(LOOP_STORAGE_KEY, 'false'); }
 
     let activeBandForLooping = null;
     let fullSwTuningActive = sessionStorage.getItem(FULL_SW_MODE_KEY) === 'true';
@@ -405,11 +541,15 @@
     let tuneEventHandler = () => {};
     let handleCustomStepTune = () => false;
 
-    const tuneToFrequency = (frequencyInMHz) => { if (socket.readyState === WebSocket.OPEN) socket.send("T" + Math.round(frequencyInMHz * 1000)); };
+    const tuneToFrequency = (frequencyInMHz) => { 
+        if (socket.readyState === WebSocket.OPEN) {
+            socket.send("T" + Math.round(parseFloat(frequencyInMHz) * 1000)); 
+        }
+    };
 
     if (ENABLE_TUNE_STEP_FEATURE || (typeof TUNING_STANDARD !== 'undefined' && TUNING_STANDARD === 'americas')) {
         if (ENABLE_TUNE_STEP_FEATURE) {
-            const TUNE_STEP_CONFIG = [
+            const TUNE_STEP_CONFIG =[
                 { step: 0.001, markerIndex: -1 }, { step: 0.010, markerIndex: -2 },
                 { step: 0.100, markerIndex: -3 }, { step: 1.000, markerIndex: -5 },
             ];
@@ -459,29 +599,19 @@
 
                 if (isFmBand) {
                     let stepSize = TUNE_STEP_CONFIG[currentTuneStepIndex].step;
-
                     if (currentTuneStepIndex === 2) {
-                        if (typeof TUNING_STANDARD !== 'undefined' && TUNING_STANDARD.toLowerCase() === 'americas') {
-                            stepSize = 0.200;
-                        } else {
-                            stepSize = 0.100;
-                        }
-                        
+                        stepSize = (typeof TUNING_STANDARD !== 'undefined' && TUNING_STANDARD.toLowerCase() === 'americas') ? 0.200 : 0.100;
                         newFreq = currentFreq + (stepSize * directionMultiplier);
-                        
                         newFreq = Math.round(newFreq * 10) / 10;
-
                     } else {
                         newFreq = currentFreq + (stepSize * directionMultiplier);
                     }
-
                 } else {
                     const stepSize = TUNE_STEP_CONFIG[currentTuneStepIndex].step;
                     newFreq = currentFreq + (stepSize * directionMultiplier);
                     
                     if (currentTuneStepIndex === 1) {
                         let bandStep = 0.005; // SW
-
                         if (newFreq >= ALL_BANDS['MW'].start && newFreq <= ALL_BANDS['MW'].end) {
                             const isAmericasTuning = (typeof TUNING_STANDARD !== 'undefined' && TUNING_STANDARD === 'americas');
                             const storedPref = localStorage.getItem('mwStepPreference');
@@ -490,7 +620,6 @@
                         } else if (newFreq >= ALL_BANDS['LW'].start && newFreq <= ALL_BANDS['LW'].end) {
                             bandStep = 0.009; // LW
                         }
-                        
                         newFreq = Math.round(newFreq / bandStep) * bandStep;
                     }
                 }
@@ -502,20 +631,13 @@
 
             freqContainer.addEventListener('click', (e) => {
                 if (e.target.closest('#mw-step-toggle-button, .loop-toggle-button, #band-range-container, .band-selector-button')) return;
-                e.preventDefault();
-                e.stopImmediatePropagation();
+                e.preventDefault(); e.stopImmediatePropagation();
 
                 currentTuneStepIndex++;
-                
                 const freqInMHz = getCurrentFrequencyInMHz();
                 const isFmBand = (freqInMHz >= 64.0);
-                if (isFmBand && currentTuneStepIndex === 0) {
-                    currentTuneStepIndex = 1;
-                }
-
-                if (currentTuneStepIndex >= TUNE_STEP_CONFIG.length) {
-                    currentTuneStepIndex = -1;
-                }
+                if (isFmBand && currentTuneStepIndex === 0) currentTuneStepIndex = 1;
+                if (currentTuneStepIndex >= TUNE_STEP_CONFIG.length) currentTuneStepIndex = -1;
                 
                 updateFrequencyDisplayWithMarker();
                 startResetTimer();
@@ -529,14 +651,8 @@
             if (currentFreq >= ALL_BANDS['FM'].start && currentFreq <= ALL_BANDS['FM'].end) {
                 const step = 0.2;
                 newFreq = parseFloat(currentFreq.toFixed(1)); 
-                if (direction === 'up') {
-                    newFreq += step;
-                } else {
-                    newFreq -= step;
-                }
-                if (Math.round(newFreq * 10) % 2 === 0) {
-                   newFreq -= 0.1;
-                }
+                if (direction === 'up') newFreq += step; else newFreq -= step;
+                if (Math.round(newFreq * 10) % 2 === 0) newFreq -= 0.1;
             } else {
                 const step = 0.010;
                 const directionMultiplier = (direction === 'up' ? 1 : -1);
@@ -551,23 +667,15 @@
                 const tolerance = 0.0001;
                 let looped = false;
                 if (direction === 'up' && currentFreq >= activeBandForLooping.end - tolerance) {
-                    tuneToFrequency(activeBandForLooping.start);
-                    looped = true;
+                    tuneToFrequency(activeBandForLooping.start); looped = true;
                 } else if (direction === 'down' && currentFreq <= activeBandForLooping.start + tolerance) {
-                    tuneToFrequency(activeBandForLooping.end);
-                    looped = true;
+                    tuneToFrequency(activeBandForLooping.end); looped = true;
                 }
-                if (looped) {
-                    event.preventDefault();
-                    event.stopImmediatePropagation();
-                    return;
-                }
+                if (looped) { event.preventDefault(); event.stopImmediatePropagation(); return; }
             }
 
             if (handleCustomStepTune(direction)) {
-                event.preventDefault();
-                event.stopImmediatePropagation();
-                return;
+                event.preventDefault(); event.stopImmediatePropagation(); return;
             }
             
             if (TUNING_STANDARD === 'americas') {
@@ -576,8 +684,7 @@
                 const isMwBand = currentFreq >= ALL_BANDS['MW'].start && currentFreq <= ALL_BANDS['MW'].end;
                 if (isFmBand || isMwBand) {
                     handleAmericasDefaultStepTune(direction);
-                    event.preventDefault();
-                    event.stopImmediatePropagation();
+                    event.preventDefault(); event.stopImmediatePropagation();
                 }
             }
         };
@@ -594,57 +701,76 @@
     let updateVisualsByFrequency;
 
     const updateBandButtonStates = () => {
-        const limitSpan = Array.from(document.querySelectorAll('.text-small, span')).find(el => el.textContent.includes('Limit:'));
-        if (!limitSpan) return;
+        const allBandData = { ...ALL_BANDS, ...SW_BANDS };
+        let limits = null;
 
-        const limitText = limitSpan.textContent;
-        const matches = limitText.match(/(\d+\.?\d*)\s*MHz\s*-\s*(\d+\.?\d*)\s*MHz/);
-
-        if (!matches || matches.length < 3) {
-            document.querySelectorAll('[data-band-key]').forEach(button => button.classList.add('disabled-band'));
-            return;
+        if (pluginConfig && pluginConfig.overrideServerTuningLimit) {
+            limits = {
+                useCustom: true,
+                fmL: pluginConfig.fmLower,
+                fmU: pluginConfig.fmUpper,
+                amL: pluginConfig.amLower,
+                amU: pluginConfig.amUpper
+            };
+        } else {
+            const limitSpan = Array.from(document.querySelectorAll('.text-small, span')).find(el => el.textContent.includes('Limit:'));
+            if (limitSpan) {
+                const matches = limitSpan.textContent.match(/(\d+\.?\d*)\s*MHz\s*-\s*(\d+\.?\d*)\s*MHz/);
+                if (matches && matches.length >= 3) {
+                    limits = {
+                        useCustom: false,
+                        globalL: parseFloat(matches[1]),
+                        globalU: parseFloat(matches[2])
+                    };
+                }
+            }
         }
 
-        const lowerLimit = parseFloat(matches[1]);
-        const upperLimit = parseFloat(matches[2]);
-
-        if (isNaN(lowerLimit) || isNaN(upperLimit)) return;
-
-        const allBandData = { ...ALL_BANDS, ...SW_BANDS };
-
-        document.querySelectorAll('[data-band-key], [data-band-name]').forEach(button => {
+        document.querySelectorAll('[data-band-key],[data-band-name]').forEach(button => {
             const key = button.dataset.bandKey || button.dataset.bandName;
             const bandData = allBandData[key];
 
             if (bandData) {
-                const bandStartMHz = (bandData.displayUnit === 'kHz') ? bandData.start / 1000 : bandData.start;
-                const bandEndMHz = (bandData.displayUnit === 'kHz') ? bandData.end / 1000 : bandData.end;
-                const isOutside = bandEndMHz < lowerLimit || bandStartMHz > upperLimit;
+                const bandStartMHz = bandData.start;
+                const bandEndMHz = bandData.end;
+                
+                let isOutside = false;
+                if (limits && limits.useCustom) {
+                    const isFmBand = bandEndMHz >= 64.0;
+                    const lowerLimit = isFmBand ? limits.fmL : limits.amL;
+                    const upperLimit = isFmBand ? limits.fmU : limits.amU;
+                    isOutside = bandEndMHz < lowerLimit || bandStartMHz > upperLimit;
+                } else if (limits && !limits.useCustom) {
+                    isOutside = bandEndMHz < limits.globalL || bandStartMHz > limits.globalU;
+                }
+
                 button.classList.toggle('disabled-band', isOutside);
 
                 const parent = button.parentElement;
-                const isAlreadyWrapped = parent.classList.contains('bs-tooltip'); 
+                const isAlreadyWrapped = parent && parent.classList.contains('bs-tooltip'); 
 
-                if (LAYOUT_STYLE === 'modern' && isOutside && !isAlreadyWrapped) {
-                    const tooltipWrapper = document.createElement('div');
-                    tooltipWrapper.className = 'bs-tooltip'; 
-                    const tooltipText = document.createElement('span');
-                    tooltipText.className = 'bs-tooltiptext';
-                    tooltipText.id = `tooltip-band-${key}`;
-                    tooltipText.textContent = 'This band is outside the server tuning limit.';
-                    button.parentNode.insertBefore(tooltipWrapper, button);
-                    tooltipWrapper.appendChild(button);
-                    tooltipWrapper.appendChild(tooltipText);
-                } else if (LAYOUT_STYLE === 'modern' && !isOutside && isAlreadyWrapped) {
-                    const grandParent = parent.parentNode;
-                    grandParent.insertBefore(button, parent);
-                    grandParent.removeChild(parent);
+                if (typeof LAYOUT_STYLE !== 'undefined' && LAYOUT_STYLE === 'modern') {
+                    if (isOutside && !isAlreadyWrapped) {
+                        const tooltipWrapper = document.createElement('div');
+                        tooltipWrapper.className = 'bs-tooltip'; 
+                        const tooltipText = document.createElement('span');
+                        tooltipText.className = 'bs-tooltiptext';
+                        tooltipText.id = `tooltip-band-${key}`;
+                        tooltipText.textContent = 'This band is outside the tuning limits.';
+                        button.parentNode.insertBefore(tooltipWrapper, button);
+                        tooltipWrapper.appendChild(button);
+                        tooltipWrapper.appendChild(tooltipText);
+                    } else if (!isOutside && isAlreadyWrapped) {
+                        const grandParent = parent.parentNode;
+                        grandParent.insertBefore(button, parent);
+                        grandParent.removeChild(parent);
+                    }
                 }
             }
         });
     };
 
-    if (LAYOUT_STYLE === 'modern') {
+    if (typeof LAYOUT_STYLE !== 'undefined' && LAYOUT_STYLE === 'modern') {
         const layoutWrapper = document.createElement('div');
         const sideButtonContainer = document.createElement('div');
         const amBandsViewContainer = document.createElement('div');
@@ -740,7 +866,7 @@
             sideButtonContainer.className = 'side-band-button-container'; layoutWrapper.appendChild(sideButtonContainer);
             layoutWrapper.appendChild(rtContainer);
             amBandsViewContainer.className = 'am-bands-view-container'; layoutWrapper.appendChild(amBandsViewContainer);
-            const sideButtonKeys = ['FM', 'OIRT', 'AM'];
+            const sideButtonKeys =['FM', 'OIRT', 'AM'];
             sideButtonKeys.forEach(key => {
                 const isAmButton = (key === 'AM');
                 const shouldCreate = isAmButton ? amBandKeys.some(b => ENABLED_BANDS.includes(b)) : ENABLED_BANDS.includes(key);
@@ -796,8 +922,7 @@
                     updateVisualsByFrequency(getCurrentFrequencyInMHz());
                 });
                 bandButtonContainer.appendChild(fullSwButton);
-            }
-            ['MW', 'LW'].forEach(key => {
+            }['MW', 'LW'].forEach(key => {
                 if (ENABLED_BANDS.includes(key)) {
                     const btn = createBandButton(key, ALL_BANDS[key], 'am-view-button');
                     btn.addEventListener('click', () => {
@@ -819,7 +944,7 @@
                     rtContainerForAnchor.parentNode.insertBefore(antContainer, rtContainerForAnchor);
                 }
                 mobileBandSelectorWrapper.id = 'mobile-band-selector-wrapper'; mobileBandSelector.id = 'mobile-band-selector';
-                const mobileBandOrder = ['FM', 'OIRT', 'SW', 'MW', 'LW'];
+                const mobileBandOrder =['FM', 'OIRT', 'SW', 'MW', 'LW'];
                 mobileBandOrder.forEach(key => {
                     if (ENABLED_BANDS.includes(key)) {
                         const option = document.createElement('option'); option.value = key; option.textContent = ALL_BANDS[key].name; mobileBandSelector.appendChild(option);
@@ -872,7 +997,7 @@
                 });
             }
         }
-    } else if (LAYOUT_STYLE === 'classic') {
+    } else if (typeof LAYOUT_STYLE !== 'undefined' && LAYOUT_STYLE === 'classic') {
         const pluginTopContainer = document.createElement("div");
         pluginTopContainer.className = "plugin-top-container";
         const mainBandsWrapper = document.createElement("div");
@@ -920,11 +1045,8 @@
             }
             mainBandsWrapper.querySelectorAll('.main-band-button').forEach(btn => btn.classList.toggle('active-band', btn.dataset.bandName === activeMainBandName));
             
-            if (activeMainBandName) {
-                activeBandForLooping = ALL_BANDS[activeMainBandName];
-            } else {
-                activeBandForLooping = null;
-            }
+            if (activeMainBandName) activeBandForLooping = ALL_BANDS[activeMainBandName];
+            else activeBandForLooping = null;
 
             let activeSwBandName = null;
             if (activeMainBandName === 'SW') {
@@ -949,11 +1071,8 @@
             } else {
                 swBandsContainer.style.display = 'none';
                 const activeMainBand = ALL_BANDS[activeMainBandName];
-                if (activeMainBand) {
-                    updateBandRangeDisplay(activeMainBand.start, activeMainBand.end, activeMainBand.displayUnit);
-                } else {
-                    updateBandRangeDisplay();
-                }
+                if (activeMainBand) updateBandRangeDisplay(activeMainBand.start, activeMainBand.end, activeMainBand.displayUnit);
+                else updateBandRangeDisplay();
             }
             
             if (ENABLE_FREQUENCY_MEMORY) {
@@ -967,15 +1086,11 @@
 
             const mobileBandSelectorEl = document.getElementById('mobile-band-selector');
             if (mobileBandSelectorEl && activeMainBandName) {
-                if (document.activeElement !== mobileBandSelectorEl) {
-                    mobileBandSelectorEl.value = activeMainBandName;
-                }
+                if (document.activeElement !== mobileBandSelectorEl) mobileBandSelectorEl.value = activeMainBandName;
             }
 
             const loopOption = document.getElementById('mobile-loop-toggle-option');
-            if (loopOption) {
-                loopOption.textContent = loopEnabled ? 'Disable Band Loop' : 'Enable Band Loop';
-            }
+            if (loopOption) loopOption.textContent = loopEnabled ? 'Disable Band Loop' : 'Enable Band Loop';
 
             const antContainer = document.getElementById('data-ant-container');
             const swSelectorWrapper = document.getElementById('mobile-sw-band-selector-wrapper');
@@ -983,17 +1098,13 @@
 
             if (antContainer && swSelectorWrapper) {
                 if (activeMainBandName === 'SW') {
-                    swSelectorWrapper.style.display = 'flex';
-                    antContainer.classList.add('sw-mode-active');
+                    swSelectorWrapper.style.display = 'flex'; antContainer.classList.add('sw-mode-active');
                 } else {
-                    swSelectorWrapper.style.display = 'none';
-                    antContainer.classList.remove('sw-mode-active');
+                    swSelectorWrapper.style.display = 'none'; antContainer.classList.remove('sw-mode-active');
                 }
             }
             
-            if (mobileSwBandSelectorEl) {
-                mobileSwBandSelectorEl.value = activeSwBandName || '';
-            }
+            if (mobileSwBandSelectorEl) mobileSwBandSelectorEl.value = activeSwBandName || '';
 
             updateFrequencyDisplayWithMarker();
         };
@@ -1018,11 +1129,8 @@
         let swButtonIndex = 0;
         Object.keys(SW_BANDS).forEach((swBandName) => {
             const button = createBandButton(swBandName, SW_BANDS[swBandName], true);
-            if (swButtonIndex < 9) {
-                swBandsTopWrapper.appendChild(button);
-            } else {
-                swBandsBottomWrapper.appendChild(button);
-            }
+            if (swButtonIndex < 9) swBandsTopWrapper.appendChild(button);
+            else swBandsBottomWrapper.appendChild(button);
             swButtonIndex++;
         });
 
@@ -1064,7 +1172,7 @@
             const mobileBandSelector = document.createElement('select');
             mobileBandSelector.id = 'mobile-band-selector';
             
-            const mobileBandOrder = ['FM', 'OIRT', 'SW', 'MW', 'LW'];
+            const mobileBandOrder =['FM', 'OIRT', 'SW', 'MW', 'LW'];
             mobileBandOrder.forEach(key => {
                 if (ENABLED_BANDS.includes(key)) {
                     const option = document.createElement('option');
@@ -1076,12 +1184,10 @@
 
             if (SHOW_LOOP_BUTTON) {
                 const separator = document.createElement('option');
-                separator.disabled = true;
-                separator.textContent = '──────────';
+                separator.disabled = true; separator.textContent = '──────────';
                 mobileBandSelector.appendChild(separator);
                 const loopOption = document.createElement('option');
-                loopOption.id = 'mobile-loop-toggle-option';
-                loopOption.value = 'toggle-loop';
+                loopOption.id = 'mobile-loop-toggle-option'; loopOption.value = 'toggle-loop';
                 loopOption.textContent = loopEnabled ? 'Disable Band Loop' : 'Enable Band Loop';
                 mobileBandSelector.appendChild(loopOption);
             }
@@ -1094,13 +1200,11 @@
             const mobileSwBandSelector = document.createElement('select');
             mobileSwBandSelector.id = 'mobile-sw-band-selector';
             const defaultSwOption = document.createElement('option');
-            defaultSwOption.value = "";
-            defaultSwOption.textContent = "Band";
+            defaultSwOption.value = ""; defaultSwOption.textContent = "Band";
             mobileSwBandSelector.appendChild(defaultSwOption);
             Object.keys(SW_BANDS).forEach(key => {
                 const option = document.createElement('option');
-                option.value = key;
-                option.textContent = key;
+                option.value = key; option.textContent = key;
                 mobileSwBandSelector.appendChild(option);
             });
             mobileSwBandSelectorWrapper.appendChild(mobileSwBandSelector);
@@ -1130,8 +1234,7 @@
                     let currentMainKey = null;
                     for (const bandKey of ENABLED_BANDS) {
                         if (ALL_BANDS[bandKey] && freqMhz >= ALL_BANDS[bandKey].start && freqMhz <= ALL_BANDS[bandKey].end) {
-                            currentMainKey = bandKey; 
-                            break; 
+                            currentMainKey = bandKey; break; 
                         }
                     }
                     if (currentMainKey) mobileBandSelector.value = currentMainKey;
@@ -1163,26 +1266,13 @@
 
     const setBodyClasses = () => {
       const body = document.body;
+      if (typeof LAYOUT_STYLE !== 'undefined' && LAYOUT_STYLE === 'modern') body.classList.add('layout-modern');
+      else body.classList.add('layout-classic');
       
-      if (LAYOUT_STYLE === 'modern') {
-        body.classList.add('layout-modern');
-      } else {
-        body.classList.add('layout-classic');
-      }
-      
-      if (ENABLE_TUNE_STEP_FEATURE) {
-        body.classList.add('tune-step-enabled');
-      }
-      if (SHOW_LOOP_BUTTON) {
-        body.classList.add('loop-button-visible');
-      }
-      if (SHOW_BAND_RANGE) {
-        body.classList.add('band-range-visible');
-      }
-      
-      if (LAYOUT_STYLE === 'modern' && !HIDE_ALL_BUTTONS) {
-        body.classList.add('modern-buttons-visible');
-      }
+      if (typeof ENABLE_TUNE_STEP_FEATURE !== 'undefined' && ENABLE_TUNE_STEP_FEATURE) body.classList.add('tune-step-enabled');
+      if (typeof SHOW_LOOP_BUTTON !== 'undefined' && SHOW_LOOP_BUTTON) body.classList.add('loop-button-visible');
+      if (typeof SHOW_BAND_RANGE !== 'undefined' && SHOW_BAND_RANGE) body.classList.add('band-range-visible');
+      if (typeof LAYOUT_STYLE !== 'undefined' && LAYOUT_STYLE === 'modern' && !HIDE_ALL_BUTTONS) body.classList.add('modern-buttons-visible');
     };
     
     setBodyClasses();
@@ -1191,7 +1281,7 @@
       setTimeout(() => {
         const freqMhz = getCurrentFrequencyInMHz();
         if (!isNaN(freqMhz)) {
-          updateVisualsByFrequency(freqMhz);
+          if (typeof updateVisualsByFrequency === 'function') updateVisualsByFrequency(freqMhz);
           if (ENABLE_AM_BW) setTimeout(() => updateBwOptionsForMode(freqMhz), 150);
         }
       }, 0);
@@ -1208,7 +1298,7 @@
       const initialFreqMhz = getCurrentFrequencyInMHz();
       if (ENABLE_AM_BW) initializeBwFilter();
       if (!isNaN(initialFreqMhz)) {
-        updateVisualsByFrequency(initialFreqMhz);
+        if (typeof updateVisualsByFrequency === 'function') updateVisualsByFrequency(initialFreqMhz);
         if (ENABLE_AM_BW) updateBwOptionsForMode(initialFreqMhz);
       }
       if(typeof updateBandButtonStates === 'function') updateBandButtonStates();
@@ -1230,16 +1320,12 @@
       mwStepButton.textContent = is10kHzStep ? '10 kHz' : '9 kHz';
       mwStepButton.title = 'Toggle MW tuning step';
       
-      const updateButtonStyle = () => {
-        mwStepButton.classList.toggle('active', is10kHzStep);
-      };
+      const updateButtonStyle = () => { mwStepButton.classList.toggle('active', is10kHzStep); };
 
       mwStepButton.addEventListener('click', (e) => {
-        e.stopPropagation();
-        e.preventDefault();
+        e.stopPropagation(); e.preventDefault();
         
         const originalFreq = getCurrentFrequencyInMHz();
-
         is10kHzStep = !is10kHzStep;
         mwStepButton.textContent = is10kHzStep ? '10 kHz' : '9 kHz';
         localStorage.setItem(MW_STEP_STORAGE_KEY, is10kHzStep);
@@ -1252,11 +1338,8 @@
         let targetFreq = Math.round(originalFreq / newStep) * newStep;
         targetFreq = Math.max(newBand.start, Math.min(newBand.end, targetFreq));
         
-        if (Math.abs(targetFreq - originalFreq) > 0.0001) {
-            tuneToFrequency(targetFreq.toFixed(3));
-        }
-        
-        updateVisualsByFrequency(targetFreq);
+        if (Math.abs(targetFreq - originalFreq) > 0.0001) tuneToFrequency(targetFreq.toFixed(3));
+        if (typeof updateVisualsByFrequency === 'function') updateVisualsByFrequency(targetFreq);
       });
       
       freqContainer.appendChild(mwStepButton);
@@ -1264,7 +1347,7 @@
 
       const originalUpdateVisuals = updateVisualsByFrequency;
       updateVisualsByFrequency = (freqInMHz) => {
-        originalUpdateVisuals(freqInMHz);
+        if (typeof originalUpdateVisuals === 'function') originalUpdateVisuals(freqInMHz);
         const isMwBandActive = (ALL_BANDS.MW && freqInMHz >= ALL_BANDS.MW.start && freqInMHz <= ALL_BANDS.MW.end);
         mwStepButton.style.display = isMwBandActive ? 'block' : 'none';
       };
@@ -1279,53 +1362,42 @@
               const tolerance = 0.0001;
               let looped = false;
               if (direction === 'up' && currentFreq >= ALL_BANDS.MW.end - tolerance) {
-                  tuneToFrequency(ALL_BANDS.MW.start);
-                  looped = true;
+                  tuneToFrequency(ALL_BANDS.MW.start); looped = true;
               } else if (direction === 'down' && currentFreq <= ALL_BANDS.MW.start + tolerance) {
-                  tuneToFrequency(ALL_BANDS.MW.end);
-                  looped = true;
+                  tuneToFrequency(ALL_BANDS.MW.end); looped = true;
               }
-              if (looped) {
-                  event.preventDefault();
-                  event.stopImmediatePropagation();
-                  return;
-              }
+              if (looped) { event.preventDefault(); event.stopImmediatePropagation(); return; }
           }
 
           if (!handleCustomStepTune(direction)) {
             const step = is10kHzStep ? 0.010 : 0.009;
             const directionMultiplier = (direction === 'up' ? 1 : -1);
-            
             let newFreq = Math.round((currentFreq + (step * directionMultiplier)) / step) * step;
-            
-            if (SHOW_LOOP_BUTTON && loopEnabled) {
-                newFreq = Math.max(ALL_BANDS.MW.start, Math.min(ALL_BANDS.MW.end, newFreq));
-            }
+            if (SHOW_LOOP_BUTTON && loopEnabled) newFreq = Math.max(ALL_BANDS.MW.start, Math.min(ALL_BANDS.MW.end, newFreq));
 
             tuneToFrequency(newFreq.toFixed(3));
-            event.preventDefault();
-            event.stopImmediatePropagation();
-            return;
+            event.preventDefault(); event.stopImmediatePropagation(); return;
           }
         }
-        
         originalTuneHandler(event, direction);
       };
     }
 
-    console.log(`Enhanced Tuning v2.06.2 loaded.`);
+    console.log(`[Enhanced Tuning] v2.06.7 loaded successfully.`);
   };
 
-  document.addEventListener("DOMContentLoaded", () => {
-    loadScript('/public/config.ini')
-      .then(() => {
-        return loadPluginStylesheet();
-      })
-      .then(() => {
-        initializePlugin();
-      })
-      .catch(error => {
-        console.error("BandSelector Error: Could not load dependencies. Plugin will not run.", error);
-      });
+  // Wait for the DOM and API calls to complete before starting
+  document.addEventListener("DOMContentLoaded", async () => {
+    // 1. Fetch config first
+    await fetchPluginConfig();
+    
+    // 2. Build the Admin Panel if on the Setup page
+    initAdminPanel();
+
+    // 3. Load CSS and start normal operations
+    loadScript('/public/config.js')
+      .then(() => loadPluginStylesheet())
+      .then(() => initializePlugin())
+      .catch(error => console.error("[Enhanced Tuning] Error: Could not load dependencies.", error));
   });
 })();
