@@ -3,6 +3,14 @@
 Enhanced Tuning Plugin v2.6 for FM-DX-Webserver
 <br>
 <br>
+Update v2.06.3 - Seamless Admin Integration & Strict Tuning Limits
+
+ - Seamless Admin Panel Takeover: Plugin settings are no longer in a separate box. They are now beautifully integrated directly into the native "Tuning options" tab with a custom UI that perfectly matches the original webserver design.
+ - Separate AM & FM Limits: You can now set independent lower and upper tuning boundaries specifically for AM and FM bands.
+ - Strict Limit Enforcement: Upgraded the tuning interceptor to completely prevent users from tuning outside the defined limits under any circumstances (creates a "wall" effect, even when using the scroll wheel on standard steps).
+ - Bug Fixes & UI Tweaks: Fixed a calculation bug that caused MW and LW buttons to be incorrectly grayed out. Polished the layout of the admin input fields for a cleaner, more compact look.
+ - This highlights all the great work and clever solutions you've implemented in this update!
+<br><br>
 *A plugin for FM-DX-Webserver that enhances the user's tuning experience.*
 <br><br>
 
