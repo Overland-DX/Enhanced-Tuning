@@ -10,29 +10,34 @@
   // =========================================================================
   const originalWebSocketSend = WebSocket.prototype.send;
   WebSocket.prototype.send = function(data) {
-      if (pluginConfig && pluginConfig.overrideServerTuningLimit && typeof data === 'string' && data.startsWith('T')) {
+      // Sikrer at vi KUN fanger opp rene, positive tall-kommandoer (f.eks 'T98000')
+      if (pluginConfig && pluginConfig.overrideServerTuningLimit && typeof data === 'string' && /^T\d+$/.test(data)) {
           let freqMhz = parseInt(data.substring(1), 10) / 1000;
-          const isFm = freqMhz >= 64.0;
-          let modified = false;
+          
+          // Ignorer 'T0' som core-scriptet noen ganger sender som en 'dummy' ved antennebytte
+          if (freqMhz > 0) {
+              const isFm = freqMhz >= 64.0;
+              let modified = false;
 
-          if (isFm) {
-              if (freqMhz < pluginConfig.fmLower) { freqMhz = pluginConfig.fmLower; modified = true; }
-              else if (freqMhz > pluginConfig.fmUpper) { freqMhz = pluginConfig.fmUpper; modified = true; }
-          } else {
-              if (freqMhz < pluginConfig.amLower) { freqMhz = pluginConfig.amLower; modified = true; }
-              else if (freqMhz > pluginConfig.amUpper) { freqMhz = pluginConfig.amUpper; modified = true; }
-          }
-
-          if (modified) {
-              const freqElement = document.getElementById('data-frequency');
-              if (freqElement) {
-                  const freqText = freqElement.textContent;
-                  let currentFreq = parseFloat(freqText);
-                  if (freqText.toLowerCase().includes('khz')) currentFreq /= 1000;
-                  if (Math.abs(currentFreq - freqMhz) < 0.0001) return; // Prevent spamming
+              if (isFm) {
+                  if (freqMhz < pluginConfig.fmLower) { freqMhz = pluginConfig.fmLower; modified = true; }
+                  else if (freqMhz > pluginConfig.fmUpper) { freqMhz = pluginConfig.fmUpper; modified = true; }
+              } else {
+                  if (freqMhz < pluginConfig.amLower) { freqMhz = pluginConfig.amLower; modified = true; }
+                  else if (freqMhz > pluginConfig.amUpper) { freqMhz = pluginConfig.amUpper; modified = true; }
               }
-              console.log(`[Enhanced Tuning] Tuning prevented. Snapped to: ${freqMhz} MHz`);
-              data = "T" + Math.round(freqMhz * 1000);
+
+              if (modified) {
+                  const freqElement = document.getElementById('data-frequency');
+                  if (freqElement) {
+                      const freqText = freqElement.textContent;
+                      let currentFreq = parseFloat(freqText);
+                      if (freqText.toLowerCase().includes('khz')) currentFreq /= 1000;
+                      if (Math.abs(currentFreq - freqMhz) < 0.0001) return; // Prevent spamming
+                  }
+                  console.log(`[Enhanced Tuning] Tuning prevented. Snapped to: ${freqMhz} MHz`);
+                  data = "T" + Math.round(freqMhz * 1000);
+              }
           }
       }
       originalWebSocketSend.apply(this, arguments);
