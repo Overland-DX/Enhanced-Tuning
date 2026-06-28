@@ -8,6 +8,8 @@
       HIDE_ALL_BUTTONS: false,
       SHOW_LOOP_BUTTON: true,
       SHOW_BAND_RANGE: true,
+      HIDE_DECIMAL_FOR_HF: false,
+      HIDE_DECIMAL_HF_THRESHOLD: 30,
       ENABLE_TUNE_STEP_FEATURE: true,
       TUNE_STEP_TIMEOUT_SECONDS: 20,
       ENABLED_BANDS: ['FM', 'OIRT', 'SW', 'MW', 'LW'],
@@ -2532,9 +2534,11 @@ let html = `<div style="font-size:16px; font-weight:bold; color:#fff; margin-bot
     if (!isAdmin) return;
     const observer = new MutationObserver(() => {
         const fmBtn = document.querySelector('.band-selector-button[data-band-key="FM"], .band-selector-button[data-band-name="FM"]');
-        if (fmBtn && !document.getElementById('et-admin-btn')) {
-            
-            const parentContainer = fmBtn.closest('.side-band-button-container, .main-bands-wrapper');
+        const freqContainerForFallback = pluginConfig.HIDE_ALL_BUTTONS ? document.getElementById('freq-container') : null;
+        const anchor = fmBtn || freqContainerForFallback;
+        if (anchor && !document.getElementById('et-admin-btn')) {
+
+            const parentContainer = fmBtn ? fmBtn.closest('.side-band-button-container, .main-bands-wrapper') : freqContainerForFallback;
             if (parentContainer) {
                 parentContainer.style.position = 'relative';
                 const freqContainer = document.getElementById('freq-container');
@@ -2547,21 +2551,33 @@ let html = `<div style="font-size:16px; font-weight:bold; color:#fff; margin-bot
             settingsBtn.id = 'et-admin-btn';
             settingsBtn.innerHTML = '⚙️';
             settingsBtn.title = 'Enhanced Tuning Settings';
-            
-            const leftPosition = pluginConfig.LAYOUT_STYLE === 'modern' ? '-45px' : '-28px';
-            
-            settingsBtn.style.cssText = `
+
+            settingsBtn.style.cssText = fmBtn ? `
                 position: absolute;
                 top: 0px;
-                left: ${leftPosition};
-                background: transparent; 
-                border: none; 
-                cursor: pointer; 
-                font-size: 18px; 
+                left: ${pluginConfig.LAYOUT_STYLE === 'modern' ? '-45px' : '-28px'};
+                background: transparent;
+                border: none;
+                cursor: pointer;
+                font-size: 18px;
                 padding: 0; /* Fjerner all ekstra plass inni knappen */
                 width: 20px; /* Fast, liten bredde */
                 height: 20px; /* Fast, liten høyde */
-                transition: transform 0.2s, text-shadow 0.2s; 
+                transition: transform 0.2s, text-shadow 0.2s;
+                color: var(--color-text);
+                z-index: 1000;
+            ` : `
+                position: absolute;
+                top: 5px;
+                right: 5px;
+                background: transparent;
+                border: none;
+                cursor: pointer;
+                font-size: 18px;
+                padding: 0;
+                width: 20px;
+                height: 20px;
+                transition: transform 0.2s, text-shadow 0.2s;
                 color: var(--color-text);
                 z-index: 1000;
             `;
@@ -2580,7 +2596,7 @@ let html = `<div style="font-size:16px; font-weight:bold; color:#fff; margin-bot
             };
 
             if (parentContainer) parentContainer.appendChild(settingsBtn);
-            else fmBtn.parentNode.insertBefore(settingsBtn, fmBtn);
+            else anchor.parentNode.insertBefore(settingsBtn, anchor);
         }
     });
     observer.observe(document.body, { childList: true, subtree: true });
@@ -2602,6 +2618,12 @@ body.tune-step-enabled .freq-digit-marker {
     color: #00FF00;
     text-decoration: underline;
     text-underline-offset: 3px;
+}
+.et-dimmed-zero {
+    opacity: 0.1;
+}
+.et-dimmed-zero.freq-digit-marker {
+    opacity: 0.9;
 }
 
 /* A2: Styles for disabled bands (Tune Limit) */
@@ -3458,6 +3480,86 @@ body.et-analog-active #mm-scope-flex {
         };
 
         // =========================================================================
+        // HIDE DECIMAL POINT FOR HF BAND, AND DIM LEADING ZERO BELOW 1 MHz
+        // =========================================================================
+        const findFreqCharNode = (targetIndex) => {
+            let pos = 0, child = dataFrequencyElement.firstChild;
+            while (child) {
+                const len = child.textContent.length;
+                if (targetIndex >= pos && targetIndex < pos + len) return { node: child, pos, len };
+                pos += len;
+                child = child.nextSibling;
+            }
+            return null;
+        };
+
+        const applyFreqDecimalHiding = () => {
+            const raw = dataFrequencyElement.textContent;
+            if (!raw || raw.toLowerCase().includes('khz') || !raw.includes('.')) return;
+            const value = parseFloat(raw);
+            if (isNaN(value)) return;
+            const shouldHide = pluginConfig.HIDE_DECIMAL_FOR_HF && value <= pluginConfig.HIDE_DECIMAL_HF_THRESHOLD;
+            const shouldDimZero = shouldHide && value < 1 && raw.charAt(0) === '0' && raw.charAt(1) === '.';
+            const dotIndex = raw.indexOf('.');
+
+            const dotInfo = findFreqCharNode(dotIndex);
+            if (dotInfo) {
+                const { node: child, pos, len } = dotInfo;
+                if (child.nodeType === Node.TEXT_NODE) {
+                    if (shouldHide) {
+                        const text = child.textContent;
+                        const localIdx = dotIndex - pos;
+                        const frag = document.createDocumentFragment();
+                        if (localIdx > 0) frag.appendChild(document.createTextNode(text.slice(0, localIdx)));
+                        const span = document.createElement('span');
+                        span.className = 'et-hidden-dot';
+                        span.dataset.etHiddenByDecimal = '1';
+                        span.style.display = 'none';
+                        span.textContent = '.';
+                        frag.appendChild(span);
+                        if (localIdx + 1 < text.length) frag.appendChild(document.createTextNode(text.slice(localIdx + 1)));
+                        dataFrequencyElement.replaceChild(frag, child);
+                    }
+                } else if (child.nodeType === Node.ELEMENT_NODE && len === 1) {
+                    if (shouldHide && child.style.display !== 'none') {
+                        child.dataset.etHiddenByDecimal = '1';
+                        child.style.display = 'none';
+                    } else if (!shouldHide && child.dataset.etHiddenByDecimal === '1') {
+                        child.style.display = '';
+                        delete child.dataset.etHiddenByDecimal;
+                    }
+                }
+            }
+
+            const zeroInfo = findFreqCharNode(0);
+            if (zeroInfo) {
+                const { node: child, len } = zeroInfo;
+                if (child.nodeType === Node.TEXT_NODE) {
+                    if (shouldDimZero) {
+                        const text = child.textContent;
+                        const frag = document.createDocumentFragment();
+                        const span = document.createElement('span');
+                        span.className = 'et-dimmed-zero';
+                        span.textContent = text.charAt(0);
+                        frag.appendChild(span);
+                        if (text.length > 1) frag.appendChild(document.createTextNode(text.slice(1)));
+                        dataFrequencyElement.replaceChild(frag, child);
+                    }
+                } else if (child.nodeType === Node.ELEMENT_NODE && len === 1) {
+                    if (shouldDimZero && !child.classList.contains('et-dimmed-zero')) {
+                        child.classList.add('et-dimmed-zero');
+                    } else if (!shouldDimZero && child.classList.contains('et-dimmed-zero')) {
+                        child.classList.remove('et-dimmed-zero');
+                    }
+                }
+            }
+        };
+
+        const freqDecimalObserver = new MutationObserver(applyFreqDecimalHiding);
+        freqDecimalObserver.observe(dataFrequencyElement, { childList: true, characterData: true, subtree: true });
+        applyFreqDecimalHiding();
+
+        // =========================================================================
         // SMART kHZ INPUT INTERCEPTOR 
         // =========================================================================
         if (pluginConfig.ENABLE_SMART_KHZ_INPUT) {
@@ -3819,6 +3921,7 @@ body.et-analog-active #mm-scope-flex {
                         }
                         dataFrequencyElement.innerHTML = html;
                     }
+                    applyFreqDecimalHiding();
                     if (observer) observer.observe(dataFrequencyElement, { characterData: true, childList: true, subtree: true });
                 };
 
