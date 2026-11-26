@@ -3629,8 +3629,12 @@ body.et-analog-active #mm-scope-flex {
                     newInput.dataset.smartKhz = "true"; 
                     oldInput.parentNode.replaceChild(newInput, oldInput);
 
-                    newInput.addEventListener('keydown', (e) => {
-                        if (e.key === 'Enter') {
+                    // Cloning drops the webserver's own keyup listener, so other plugins
+                    // (e.g. AutoMemory) that tune by setting the value and dispatching a
+                    // synthetic keyup Enter must be handled here too. On a real keypress
+                    // keydown clears the field first, so keyup finds nothing to send.
+                    const handleSmartEnter = (e) => {
+                        if (e.key === 'Enter' || e.keyCode === 13) {
                             e.preventDefault();
                             let valStr = newInput.value.trim();
                             let val = parseFloat(valStr);
@@ -3651,11 +3655,13 @@ body.et-analog-active #mm-scope-flex {
                                 if (typeof socket !== 'undefined' && socket && socket.readyState === WebSocket.OPEN) {
                                     socket.send("T" + Math.round(targetMhz * 1000));
                                 }
-                                newInput.value = ''; 
-                                newInput.focus();
+                                newInput.value = '';
+                                if (e.isTrusted) newInput.focus();
                             }
                         }
-                    });
+                    };
+                    newInput.addEventListener('keydown', handleSmartEnter);
+                    newInput.addEventListener('keyup', handleSmartEnter);
                 }
             }, 1000); 
         }
