@@ -1,4 +1,4 @@
-// Enhanced Tuning V3.1.1 – Analog Scale Integration, AM Scanner, Full Admin UI
+// Enhanced Tuning V3.2 – Analog Scale Integration, AM Scanner, Full Admin UI + Nixie Tubes
 // -------------------------------------------------------------------------------------
 
 /* global document, socket, window, WebSocket, Event, addIconToPluginPanel */
@@ -12,7 +12,7 @@
       HIDE_DECIMAL_HF_THRESHOLD: 30,
       ENABLE_TUNE_STEP_FEATURE: true,
       TUNE_STEP_TIMEOUT_SECONDS: 20,
-      ENABLED_BANDS: ['FM', 'OIRT', 'SW', 'MW', 'LW'],
+      ENABLED_BANDS:['FM', 'OIRT', 'SW', 'MW', 'LW'],
       TUNING_STANDARD: 'international',
       ENABLE_MW_STEP_TOGGLE: true,
       ENABLE_FREQUENCY_MEMORY: true,
@@ -34,9 +34,25 @@
       VU_METER_GAIN_AM: 1.5, 
       VU_METER_MODE: 'RMS', 
       ENABLE_MAGIC_EYE: true,
+      ENABLE_NIXIE_TUBES: true,
       ENABLE_PS_SCALE: true,
       ENABLE_SPECTRUM_OVERLAY: true,
       ENABLE_SW_STATIONS_SCALE: false,
+      SG_BANDWIDTH_HIGHLIGHT: false,
+      SG_FOLLOW_BAND: 'off',
+
+      // Visitor defaults for the Retro features. Used only until a visitor
+      // flips the switch themselves in "Enhanced / Retro Settings".
+      USER_DEFAULTS: {
+          ANALOG_SCALE_AUTOSTART: false,
+          SHOW_TUNING_KNOB: true,
+          ENABLE_VU_METER: false,
+          ENABLE_MAGIC_EYE: false,
+          ENABLE_NIXIE_TUBES: false,
+          ENABLE_PS_SCALE: true,
+          ENABLE_SPECTRUM_OVERLAY: false,
+          ENABLE_SW_STATIONS_SCALE: false
+      },
 
       customMainBands: {
           'AM_SUPER': { name: 'AM', tune: 1.000, start: 0.144, end: 27.0 },
@@ -60,6 +76,64 @@
   };
   
   let isAdmin = false;
+
+  // A visitor's own choice wins; until they make one, the admin's default applies.
+  const userPref = (storageKey, configKey) => {
+      const stored = localStorage.getItem(storageKey);
+      if (stored === null) return !!(pluginConfig.USER_DEFAULTS && pluginConfig.USER_DEFAULTS[configKey]);
+      return stored === 'true';
+  };
+
+  // MW step exactly as the MW toggle shows it: the visitor's choice, else 10 kHz for Americas
+  const getMwStepKHz = () => {
+      const stored = localStorage.getItem('mwStepPreference');
+      if (stored) return stored === 'true' ? 10 : 9;
+      return pluginConfig.TUNING_STANDARD === 'americas' ? 10 : 9;
+  };
+
+  // Latest view reported by Spectrum Graph (CustomEvent 'spectrum-graph:update')
+  let latestSpectrumView = null;
+  window.addEventListener('spectrum-graph:update', (e) => {
+      const d = (e && e.detail) || {};
+      const minFreq = Number(d.minFreq), maxFreq = Number(d.maxFreq);
+      if (Number.isFinite(minFreq) && Number.isFinite(maxFreq) && maxFreq > minFreq) {
+          latestSpectrumView = { minFreq, maxFreq, isScanning: !!d.isScanning };
+      }
+  });
+
+  // Public API for other plugins (Spectrum Graph etc.). Frequencies in MHz.
+  window.EnhancedTuning = {
+      apiVersion: 1,
+      getMwStepKHz,
+      getTuningStandard: () => pluginConfig.TUNING_STANDARD,
+      getLimits: () => ({
+          override: !!pluginConfig.overrideServerTuningLimit,
+          fmLower: Number(pluginConfig.fmLower), fmUpper: Number(pluginConfig.fmUpper),
+          amLower: Number(pluginConfig.amLower), amUpper: Number(pluginConfig.amUpper)
+      }),
+      getBands: () => [pluginConfig.customMainBands, pluginConfig.customSwBands]
+          .flatMap(group => Object.entries(group || {}))
+          .map(([key, band]) => ({ key, name: band.name || key, start: Number(band.start), end: Number(band.end) })),
+      getSpectrumGraphOptions: () => ({
+          bandwidthHighlight: !!pluginConfig.SG_BANDWIDTH_HIGHLIGHT,
+          followBand: ['last', 'scan'].includes(pluginConfig.SG_FOLLOW_BAND) ? pluginConfig.SG_FOLLOW_BAND : 'off'
+      })
+  };
+
+  // Tells other plugins when the tuned frequency moves into another band
+  // (band button, typed frequency, scrolling). The first call only sets the baseline.
+  let lastAnnouncedBandKey = null;
+  const announceBandChange = (bandKey, band, freqInMHz) => {
+      if (!bandKey || !band || bandKey === lastAnnouncedBandKey) return;
+      const initial = lastAnnouncedBandKey === null;
+      lastAnnouncedBandKey = bandKey;
+      window.dispatchEvent(new CustomEvent('enhanced-tuning:band-change', {
+          detail: { key: bandKey, start: Number(band.start), end: Number(band.end), freq: Number(freqInMHz), initial }
+      }));
+  };
+  const announceConfig = (eventName) => {
+      window.dispatchEvent(new CustomEvent(eventName, { detail: window.EnhancedTuning }));
+  };
 
   let isLocalScannerRunning = false;
   let isInternalScannerTuning = false;
@@ -170,53 +244,42 @@
       },
 
       isVuEnabled() {
-          return pluginConfig.ENABLE_VU_METER && localStorage.getItem('et_user_vu_enabled') !== 'false';
+          return pluginConfig.ENABLE_VU_METER && userPref('et_user_vu_enabled', 'ENABLE_VU_METER');
       },
 
       isPsEnabled() {
-          return pluginConfig.ENABLE_PS_SCALE && localStorage.getItem('et_user_ps_scale') !== 'false';
+          return pluginConfig.ENABLE_PS_SCALE && userPref('et_user_ps_scale', 'ENABLE_PS_SCALE');
       },
 
       isSpectrumEnabled() {
-          return pluginConfig.ENABLE_SPECTRUM_OVERLAY && localStorage.getItem('et_user_spectrum_overlay') !== 'false';
+          return pluginConfig.ENABLE_SPECTRUM_OVERLAY && userPref('et_user_spectrum_overlay', 'ENABLE_SPECTRUM_OVERLAY');
       },
       
       isSwScaleEnabled() {
-          return pluginConfig.ENABLE_SW_STATIONS_SCALE && localStorage.getItem('et_user_sw_scale') !== 'false';
+          return pluginConfig.ENABLE_SW_STATIONS_SCALE && userPref('et_user_sw_scale', 'ENABLE_SW_STATIONS_SCALE');
       },
 
       async getServerLocation() {
-          // Hvis vi allerede har hentet dem, bruk dem direkte
           if (this.serverLat !== undefined && this.serverLon !== undefined) {
               return { lat: this.serverLat, lon: this.serverLon };
           }
-          
           try {
-              // Henter statiske serverdata fra FM-DX
               const res = await fetch('/static_data');
               if (res.ok) {
                   const data = await res.json();
-                  
-                  // FIX: Bruker qthLatitude/qthLongitude fra din JSON (med lat/lon som fallback)
                   let apiLat = data.qthLatitude || data.lat;
                   let apiLon = data.qthLongitude || data.lon;
-                  
                   if (apiLat !== undefined && apiLon !== undefined && apiLat !== 0 && apiLon !== 0) {
                       this.serverLat = parseFloat(apiLat);
                       this.serverLon = parseFloat(apiLon);
-                      
-                      // Lagre i localStorage
                       localStorage.setItem('rx_lat', this.serverLat);
                       localStorage.setItem('rx_lon', this.serverLon);
-                      
                       return { lat: this.serverLat, lon: this.serverLon };
                   }
               }
           } catch(e) {
               console.warn("[Enhanced Tuning] Kunne ikke hente koordinater fra /static_data", e);
           }
-          
-          // Fallback
           let lat = localStorage.getItem('rx_lat');
           let lon = localStorage.getItem('rx_lon');
           if (lat && lon && lat !== '0' && lon !== '0') {
@@ -224,22 +287,16 @@
               this.serverLon = parseFloat(lon);
               return { lat: this.serverLat, lon: this.serverLon };
           }
-
           return { lat: 0, lon: 0 };
       },
 
       async fetchSwStations(startMhz, endMhz) {
           try {
-              // Hent de ekte koordinatene fra den nye funksjonen vår
               const coords = await this.getServerLocation();
-              
               const fStart = Math.round(startMhz * 1000);
               const fEnd = Math.round(endMhz * 1000);
-              
-              // Sender de nøyaktige server-koordinatene til AM Station Info API-et
               const res = await fetch(`/aoki-api-proxy?lat=${coords.lat}&lon=${coords.lon}&freqStart=${fStart}&freqEnd=${fEnd}`);
               if (!res.ok) return;
-              
               const data = await res.json();
               if (data && data.status === 'success') {
                   this.swStations = data.stations ||[];
@@ -274,7 +331,7 @@
           
           if (!scaleDiv || !knobDiv || !vuDiv) return;
 
-          const showKnob = pluginConfig.SHOW_TUNING_KNOB !== false;
+          const showKnob = pluginConfig.SHOW_TUNING_KNOB && userPref('et_user_tuning_knob', 'SHOW_TUNING_KNOB');
           const showVu = this.isVuEnabled();
 
           knobDiv.style.display = showKnob ? "block" : "none";
@@ -329,7 +386,7 @@
               }
           });
 
-          themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
+          themeObserver.observe(document.documentElement, { attributes: true, attributeFilter:['class', 'style', 'data-theme'] });
           themeObserver.observe(document.body, { attributes: true, attributeFilter:['class', 'style', 'data-theme'] });
       },
 
@@ -451,13 +508,12 @@
                   this.lastFetchedSwBand = this.currentKey;
               }
           } else if (isMwLw && this.isSwScaleEnabled()) {
-              // FIX: Sjekk at vi ikke allerede har lastet dem!
               if (this.lastFetchedSwBand !== this.currentKey) {
                   this.fetchMwLwFavorites();
                   this.lastFetchedSwBand = this.currentKey;
               }
           } else {
-              this.swStations = [];
+              this.swStations =[];
               this.mwLwFavorites =[];
               this.lastFetchedSwBand = null;
           }
@@ -467,9 +523,6 @@
               this.currentMax = bandData.end;
               this.currentUnit = bandData.displayUnit || 'MHz';
               
-              // --- FIX FOR BÅND-NAVN ---
-              // Hvis navnet mangler, sjekker vi om keyen slutter på 'm' (f.eks '31m').
-              // Da erstatter vi 'm' med ' meter'. Hvis ikke, bruker vi 'BAND'.
               if (bandData.name) {
                   this.currentName = bandData.name;
               } else if (bandKey && bandKey.endsWith('m')) {
@@ -477,7 +530,6 @@
               } else {
                   this.currentName = 'BAND';
               }
-              // -------------------------
               
               if (this.isVisible && this.scaleCanvas) {
                   this.resizeCanvas(); 
@@ -486,15 +538,19 @@
 
           if (pluginConfig.ANALOG_SCALE_AUTOSTART && !this._hasAutostarted) {
               this._hasAutostarted = true;
-              setTimeout(() => { 
-                  if (!this.isVisible && !this.isFading) this.toggle(); 
-              }, 1200); 
+              
+              const userAutostart = userPref('et_user_analog_autostart', 'ANALOG_SCALE_AUTOSTART');
+              if (userAutostart) {
+                  setTimeout(() => { 
+                      if (!this.isVisible && !this.isFading) this.toggle(); 
+                  }, 1200); 
+              }
           }
       },
 
       getStep() {
           if (this.currentKey === 'FM') return (pluginConfig.TUNING_STANDARD === 'americas') ? 0.200 : 0.100;
-          if (this.currentKey === 'MW') return (localStorage.getItem('mwStepPreference') === 'true' || pluginConfig.TUNING_STANDARD === 'americas') ? 0.010 : 0.009;
+          if (this.currentKey === 'MW') return getMwStepKHz() === 10 ? 0.010 : 0.009;
           if (this.currentKey === 'LW') return 0.009;
           if (this.currentKey === 'OIRT') return 0.030;
           if (this.currentKey === 'AM_SUPER') return 0.001;
@@ -989,8 +1045,6 @@
           this.lastKnobState = ""; 
       },
 
-
-
       applyWrapperStyle() {
           const cc = document.querySelector(".canvas-container.hide-phone");
           if (!cc) return;
@@ -1064,9 +1118,6 @@
               this.wrap.style.opacity = "0";
               this.wrap.style.transition = "opacity 400ms ease-in-out";
               
-              // --- DEN GENIALE ENDRINGEN ---
-              // Vi setter opacity til 0.99 i stedet for 1!
-              // Dette tvinger Chromium til å holde spektrumet bak skalaen i live!
               requestAnimationFrame(() => requestAnimationFrame(() => { this.wrap.style.opacity = "0.99"; }));
               
               setTimeout(() => { if (this.wrap) this.wrap.style.transition = ""; this.isFading = false; }, 400);
@@ -1254,22 +1305,25 @@
                   const specBtn = document.getElementById('spectrum-graph-button');
                   if (sdrCanvas && specBtn && (specBtn.classList.contains('active') || specBtn.classList.contains('bg-color-4')) && sdrCanvas.width > 100) {
                       
-                      // 1. Les av nøyaktig hvilke frekvenser original-canvaset spenner over
                       const specContainer = sdrCanvas.closest('.canvas-container') || sdrCanvas.parentElement;
-                      let ariaLabel = specContainer ? specContainer.getAttribute('aria-label') : '';
-                      
-                      let srcMin = 86.0; // Fallback
+                      // SG sets the label on the first .canvas-container, which may not be the one around #sdr-graph
+                      const labelled = [specContainer, document.querySelector('.canvas-container[role="img"]')]
+                          .find(el => el && /from [\d.]+ to [\d.]+ MHz/.test(el.getAttribute('aria-label') || ''));
+                      let ariaLabel = labelled ? labelled.getAttribute('aria-label') : '';
+
+                      let srcMin = 86.0;
                       let srcMax = 108.0;
 
-                      if (ariaLabel) {
-                          // Trekker ut minFreq og maxFreq fra "aria-label" attributtet
+                      if (latestSpectrumView) {
+                          srcMin = latestSpectrumView.minFreq;
+                          srcMax = latestSpectrumView.maxFreq;
+                      } else if (ariaLabel) {
                           const match = ariaLabel.match(/from ([\d.]+) to ([\d.]+) MHz/);
                           if (match) {
                               srcMin = parseFloat(match[1]);
                               srcMax = parseFloat(match[2]);
                           }
                       } else {
-                          // Siste utvei-fallback hvis aria-label mangler
                           const limitSpan = document.querySelector(".tuner-desc .text-small .color-4");
                           if (limitSpan) {
                               const match = limitSpan.textContent.match(/(\d+(\.\d+)?)\s*MHz\s*-\s*(\d+(\.\d+)?)/);
@@ -1280,21 +1334,17 @@
                           }
                       }
 
-                      // 2. Hent xOffset-avstanden for Y-aksen (eksakt som i orginal-koden)
                       const signalText = localStorage.getItem('signalUnit') || 'dbf';
                       const xOffset = (signalText === 'dbm') ? 36 : 30;
 
-                      // 3. Definer området i kilde-canvaset som kun inneholder graf-data
                       const srcX = xOffset;
                       const srcY = 16;
                       const srcW = sdrCanvas.width - xOffset;
                       const srcH = sdrCanvas.height - 40;
 
-                      // 4. Kalkuler hvor på VÅR skala disse frekvensene befinner seg
                       const dMin = this.currentUnit === 'kHz' ? this.currentMin * 1000 : this.currentMin;
                       const dMax = this.currentUnit === 'kHz' ? this.currentMax * 1000 : this.currentMax;
 
-                      // Matematisk mapping av startposisjon og bredde
                       const destX = tX + ((srcMin - dMin) / (dMax - dMin)) * tW;
                       const destW = ((srcMax - srcMin) / (dMax - dMin)) * tW;
 
@@ -1307,7 +1357,6 @@
                           ctx.globalAlpha = 0.3; 
                           ctx.globalCompositeOperation = 'multiply';
                           
-                          // Tegn bildet strukket nøyaktig til de riktige matematiske punktene!
                           ctx.drawImage(sdrCanvas, srcX, srcY, srcW, srcH, destX, paperY + 2, destW, (baseY - paperY) - 2);
                           ctx.restore();
                       }
@@ -1363,7 +1412,6 @@
                           let st = activeList[i];
                           let stFreq;
                           
-                          // SW bruker MHz (må deles på 1000), MW/LW bruker kHz direkte
                           if (mwLwMode) {
                               stFreq = st.frequency;
                           } else {
@@ -1437,9 +1485,6 @@
                       const hoverFactor = 1.15; 
                       ctx.font = `${isHovered ? 'bold ' : ''}${isHovered ? stFontSize * hoverFactor : stFontSize}px "Arial Narrow", Arial, sans-serif`;
                       
-                      // --- FIX FOR SW BAKGRUNNSBOKSER ---
-                      // Bestemmer om den mørke bakgrunnsboksen skal tegnes.
-                      // For SW: Kun når stasjonen er i fokus (isHovered). For FM: Når stasjonen er aktiv.
                       const drawBgBox = st.isSw ? isHovered : isActive;
                       
                       if (drawBgBox) {
@@ -1450,16 +1495,12 @@
                           ctx.shadowBlur = 0; 
                       }
                       
-                      // Setter fargen på teksten. 
-                      // Alle SW-stasjoner og aktive FM-stasjoner forblir tydelige (inkColor), selv uten boks.
                       if (st.isSw || isActive) {
                           ctx.fillStyle = inkColor; 
                       } else {
-                          // Inaktive FM-stasjoner falmes som før
                           if (isHovered) { ctx.shadowColor = "rgba(0,0,0,0.5)"; ctx.shadowBlur = 4; }
                           ctx.fillStyle = inkFaded;
                       }
-                      // ------------------------------------
                       
                       const rangeScale = this.currentUnit === 'kHz' ? 1000.0 : 1.0;
                         ctx.fillText(st.name, targetX, y, ((rangeScale / dRange) * tW * 0.90) * (isHovered ? hoverFactor : 1));
@@ -1479,7 +1520,6 @@
           ctx.font = `700 ${numSize}px "Arial Narrow", Arial, sans-serif`;
           ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = inkColor;
 
-          // Vi lagrer det første tallet som tegnes i en variabel (startNum)
           const startNum = Math.ceil(dMin / lblStep) * lblStep;
           
           for (let f = startNum; f <= dMax + 0.001; f += lblStep) {
@@ -1490,23 +1530,19 @@
           const smallLabelFont = `700 ${lblSize * (showStationsOnScale ? 0.8 : 0.6)}px Arial, sans-serif`;
           
           if (showStationsOnScale) {
-              // --- FIX FOR MHz / kHz PLASSERING ---
-              // Vi regner ut X-posisjonen og bredden til det aller første tallet
               const firstNumX = fX(startNum);
               const firstNumText = lblStep < 1 ? startNum.toFixed(1) : Math.round(startNum).toString();
               ctx.font = `700 ${numSize}px "Arial Narrow", Arial, sans-serif`;
               const firstNumWidth = ctx.measureText(firstNumText).width;
               
-              ctx.textAlign = "left";  // Tegner teksten fra venstre mot høyre
+              ctx.textAlign = "left";  
               ctx.textBaseline = "middle"; 
               ctx.font = smallLabelFont; 
               ctx.fillStyle = inkColor; 
               
-              // Vi plasserer "MHz" nøyaktig 4 piksler til HØYRE for det første tallet
               const unitX = firstNumX + (firstNumWidth / 2) + 4;
               
               ctx.fillText(this.currentUnit, unitX, numY);
-              // ------------------------------------
 
               ctx.textBaseline = "bottom"; 
               ctx.textAlign = "left"; 
@@ -1921,7 +1957,7 @@
           const tryAdd = (attempt = 0) => {
               if (typeof addIconToPluginPanel === "function") {
                   try { 
-                      addIconToPluginPanel(BTN_ID, "Analog Scale", "solid", "ruler-horizontal", `Retro Design Elements V1.2 ET<br>By Highpoint`);
+                      addIconToPluginPanel(BTN_ID, "Analog Scale", "solid", "ruler-horizontal", `Retro Design Elements V1.3 ET<br>By Highpoint`);
                       setTimeout(() => { const btn = document.getElementById(BTN_ID); if (btn) btn.classList.add("hide-phone"); }, 50);
                   } catch(e) {}
                   
@@ -2125,7 +2161,7 @@ let html = `<div style="font-size:16px; font-weight:bold; color:#fff; margin-bot
       lightCanvas: null,
       
       isUserEnabled() {
-          return pluginConfig.ENABLE_MAGIC_EYE && localStorage.getItem('et_user_magic_eye') !== 'false';
+          return pluginConfig.ENABLE_ANALOG_SCALE && pluginConfig.ENABLE_MAGIC_EYE && userPref('et_user_magic_eye', 'ENABLE_MAGIC_EYE');
       },
 
       toggleVisibility() {
@@ -2135,7 +2171,7 @@ let html = `<div style="font-size:16px; font-weight:bold; color:#fff; margin-bot
       },
 
       init() {
-          if (!pluginConfig.ENABLE_MAGIC_EYE) return;
+          if (!pluginConfig.ENABLE_ANALOG_SCALE || !pluginConfig.ENABLE_MAGIC_EYE) return;
           this.attemptMount();
       },
 
@@ -2156,7 +2192,7 @@ let html = `<div style="font-size:16px; font-weight:bold; color:#fff; margin-bot
           if (!heading) return;
 
           const contentWrapper = document.createElement('div');
-          contentWrapper.className = 'magic-eye-content-wrapper';
+          contentWrapper.className = 'magic-eye-content-wrapper magic-eye-row-wrapper';
           Object.assign(contentWrapper.style, {
               display: 'flex',
               alignItems: 'center',
@@ -2239,7 +2275,6 @@ let html = `<div style="font-size:16px; font-weight:bold; color:#fff; margin-bot
               return;
           }
 
-          // FPS BREMS for Magic Eye
           const now = Date.now();
           if (now - this.lastEyeRenderTime < 33) {
               requestAnimationFrame(() => this.updateLoop());
@@ -2470,6 +2505,494 @@ let html = `<div style="font-size:16px; font-weight:bold; color:#fff; margin-bot
 
 
   // =========================================================================
+  // NIXIE TUBE ENGINE (Retro Glow Digits)
+  // =========================================================================
+  const NixieTubeEngine = {
+      isInitDone: false,
+      _nxState: { ms: 0, lic: 0 },
+      _nxHasWSMS: false,
+      
+      PTY_TABLE:[
+          "PTY", "News", "Current Affairs", "Info",
+          "Sport", "Education", "Drama", "Culture", "Science", "Varied",
+          "Pop Music", "Rock Music", "Easy Listening", "Light Classical",
+          "Serious Classical", "Other Music", "Weather", "Finance",
+          "Children's Programmes", "Social Affairs", "Religion", "Phone-in",
+          "Travel", "Leisure", "Jazz Music", "Country Music", "National Music",
+          "Oldies Music", "Folk Music", "Documentary"
+      ],
+
+      isUserEnabled() {
+          return pluginConfig.ENABLE_ANALOG_SCALE && pluginConfig.ENABLE_NIXIE_TUBES && userPref('et_user_nixie_enabled', 'ENABLE_NIXIE_TUBES');
+      },
+
+      applyState() {
+          if (this.isUserEnabled()) {
+              document.body.classList.add('nixie-active');
+          } else {
+              document.body.classList.remove('nixie-active');
+          }
+      },
+
+      isVisEqActive() {
+          return (document.getElementById('visualeq-plugin-styles') !== null || 
+                  document.querySelector('.panel-eq-container') !== null || 
+                  localStorage.getItem('visualeq_enabled_state') === 'true');
+      },
+
+      createTube(char, isDot) {
+          let tube = document.createElement('div');
+          if (isDot) {
+              tube.className = 'nx-tube nx-tube-dot';
+              tube.innerHTML = `<div class="nx-mesh"></div><div class="nx-char">.</div><div class="nx-glass"></div>`;
+          } else {
+              tube.className = 'nx-tube';
+              tube.innerHTML = `<div class="nx-unlit-layer">8</div><div class="nx-mesh"></div><div class="nx-glass"></div><div class="nx-char nx-off">${char}</div>`;
+          }
+          return tube;
+      },
+
+      setTubeText(containerId, text, turnOn = true) {
+          const container = document.getElementById(containerId);
+          if (!container) return;
+          
+          const stateHash = text + "_" + turnOn;
+          if (container.dataset.lastState === stateHash) return;
+          container.dataset.lastState = stateHash;
+
+          if (container.children.length !== text.length) {
+              container.innerHTML = '';
+              for (let i = 0; i < text.length; i++) {
+                  container.appendChild(this.createTube(text[i], text[i] === '.'));
+              }
+          }
+          
+          const tubes = container.children;
+          for (let i = 0; i < text.length; i++) {
+              if (tubes[i].classList.contains('nx-tube-dot')) continue;
+              let charDiv = tubes[i].querySelector('.nx-char');
+              if (charDiv) {
+                  if (!turnOn || text[i] === ' ' || text[i] === '') charDiv.classList.add('nx-off');
+                  else { charDiv.innerText = text[i]; charDiv.classList.remove('nx-off'); }
+              }
+          }
+      },
+
+      setTubeFlag(containerId, isOn) {
+          const container = document.getElementById(containerId);
+          if (!container) return;
+
+          const stateHash = isOn ? "1" : "0";
+          if (container.dataset.lastState === stateHash) return;
+          container.dataset.lastState = stateHash;
+
+          const tubes = container.children;
+          for (let i = 0; i < tubes.length; i++) {
+              let charDiv = tubes[i].querySelector('.nx-char');
+              if (charDiv) isOn ? charDiv.classList.remove('nx-off') : charDiv.classList.add('nx-off');
+          }
+      },
+
+      init() {
+          if (!pluginConfig.ENABLE_ANALOG_SCALE || !pluginConfig.ENABLE_NIXIE_TUBES || this.isInitDone) return;
+          this.isInitDone = true;
+          
+          this.applyState();
+
+          const fontLink = document.createElement('link');
+          fontLink.href = 'https://fonts.googleapis.com/css2?family=Saira+Extra+Condensed:wght@100;200;300;500&display=swap';
+          fontLink.rel = 'stylesheet';
+          document.head.appendChild(fontLink);
+
+          const visEqActive = this.isVisEqActive();
+
+          const hidePsAndFlagsCss = visEqActive ? '' : `
+              body.nixie-active #data-ps, 
+              body.nixie-active .data-pty, 
+              body.nixie-active .data-tp, 
+              body.nixie-active .data-ta, 
+              body.nixie-active .data-ms, 
+              body.nixie-active .stereo-container,
+          `;
+
+          const flagsBgCss = visEqActive ? '' : `
+              body.nixie-active #flags-container-desktop, 
+              body.nixie-active #flags-container-phone {
+                  background: color-mix(in srgb, var(--color-1) 50%, transparent) !important;
+                  background-color: color-mix(in srgb, var(--color-1) 50%, transparent) !important;
+                  box-shadow: none !important;
+                  border: none !important;
+                  transition: background 0.15s ease-in-out !important;
+              }
+
+              body.nixie-active #flags-container-desktop:hover, 
+              body.nixie-active #flags-container-phone:hover {
+                  background: color-mix(in srgb, var(--color-2) 70%, transparent) !important;
+                  background-color: color-mix(in srgb, var(--color-2) 70%, transparent) !important;
+              }
+          `;
+
+          const style = document.createElement('style');
+          style.innerHTML = `
+              @keyframes nxSlideOutLeft {
+                  0% { transform: translateX(0); opacity: 1; }
+                  100% { transform: translateX(-50%); opacity: 0; }
+              }
+              @keyframes nxSlideInRight {
+                  0% { transform: translateX(50%); opacity: 0; }
+                  100% { transform: translateX(0); opacity: 1; }
+              }
+
+              @media (min-width: 769px) {
+                  body.nixie-active #data-frequency, 
+                  ${hidePsAndFlagsCss}
+                  body.nixie-active #data-pi, 
+                  body.nixie-active #data-signal, 
+                  body.nixie-active #data-signal-decimal, 
+                  body.nixie-active .nx-hide-original { 
+                      display: none !important; 
+                  }
+              }
+
+              @media (max-width: 768px) {
+                  .nx-tube-container,
+                  .nx-pty-block,
+                  .nx-flags-row {
+                      display: none !important;
+                  }
+              }
+
+              body:not(.nixie-active) .nx-tube-container,
+              body:not(.nixie-active) .nx-pty-block,
+              body:not(.nixie-active) .nx-flags-row {
+                  display: none !important;
+              }
+
+              ${flagsBgCss}
+
+              body.nixie-active .magic-eye-text-wrapper { flex: 1 1 auto !important; width: auto !important; min-width: fit-content !important; max-width: none !important; }
+              body.nixie-active .magic-eye-row-wrapper { justify-content: center !important; gap: 8px !important; }
+              body.nixie-active #magic-eye-wrapper { transform: translateX(20px) !important; }
+
+              .nx-tube-container {
+                  display: flex; justify-content: center; align-items: flex-end;
+                  gap: 2px; margin-top: 1px; margin-bottom: 1px; line-height: 1;
+              }
+
+              .nx-pty-block {
+                  display: flex; flex-direction: column; align-items: center;
+                  width: max-content; margin: 0 auto;
+              }
+              .nx-flags-row {
+                  display: flex; justify-content: space-between; align-items: center;
+                  width: 100%; margin-top: 4px;
+              }
+              
+              .nx-ecc-wrapper {
+                  display: flex; align-items: center; justify-content: center;
+                  min-width: 25px; padding: 0 4px;
+              }
+              .nx-ecc-wrapper i { font-size: 16px !important; border-radius: 2px; }
+
+              #nx-st-desktop, #nx-st-phone { cursor: pointer; }
+              #nx-st-desktop:hover .nx-char, #nx-st-phone:hover .nx-char { filter: saturate(2) brightness(1.6) !important; }
+
+              .nx-tube {
+                  position: relative;
+                  background: linear-gradient(90deg, rgba(255,255,255,0.04) 0%, rgba(0,0,0,0.15) 20%, rgba(0,0,0,0.3) 80%, rgba(255,255,255,0.02) 100%);
+                  border: 1px solid rgba(255, 255, 255, 0.08); border-bottom: none;
+                  box-shadow: inset 0 -15px 15px -5px color-mix(in srgb, var(--color-4, #0050ff) 70%, transparent), 0 10px 15px -5px color-mix(in srgb, var(--color-4, #0050ff) 40%, transparent);
+                  overflow: hidden;
+              }
+              .nx-tube::after { content: ''; position: absolute; bottom: 0; left: 0; width: 100%; height: 3px; background: #050505; border-top: 1px solid #333; z-index: 10; }
+
+              .nx-unlit-layer {
+                  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+                  display: flex; align-items: center; justify-content: center;
+                  font-family: 'Saira Extra Condensed', sans-serif; font-weight: 100;
+                  color: transparent; -webkit-text-stroke: 1px rgba(200, 200, 220, 0.12); 
+                  z-index: 1; user-select: none;
+              }
+
+              .nx-char {
+                  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+                  display: flex; align-items: center; justify-content: center;
+                  font-family: 'Saira Extra Condensed', sans-serif; font-weight: 300; line-height: 1;
+                  color: #ff8833; 
+                  text-shadow: 0 0 5px #ff4400, 0 0 10px #ff2200, 0 0 20px #ff0000, 0 0 35px #ff0000;
+                  z-index: 5; user-select: none; transition: opacity 0.25s ease-in-out; opacity: 1;
+              }
+              
+              .nx-pty-block .nx-char,
+              .nx-flags-row .nx-char {
+                  color: #ff6600 !important; 
+                  text-shadow: 0 0 5px #ff4400, 0 0 12px #ff2200, 0 0 25px #ff0000, 0 0 45px #ff0000, 0 0 70px rgba(255, 30, 0, 0.6) !important;
+                  font-weight: 500 !important; filter: saturate(1.7) brightness(1.3); 
+              }
+              .nx-char.nx-off { opacity: 0 !important; }
+
+              .nx-mesh { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background-image: url("data:image/svg+xml,%3Csvg width='10' height='17.32' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M5 0 L10 2.88 L10 8.66 L5 11.54 L0 8.66 L0 2.88 Z M0 11.54 L5 14.42 L5 20.18 M10 11.54 L15 14.42' stroke='rgba(220,220,240,0.25)' stroke-width='0.6' fill='none'/%3E%3C/svg%3E"); z-index: 7; pointer-events: none; }
+              .nx-glass { position: absolute; top: 2px; left: 3px; width: 6px; height: 95%; background: linear-gradient(90deg, rgba(255,255,255,0.3) 0%, transparent 100%); border-radius: 15px 0 0 0; z-index: 8; pointer-events: none; }
+
+              .nx-tube-container[data-nx-size="large"] { height: 72px; }
+              .nx-tube-container[data-nx-size="large"] .nx-tube { width: 32px; height: 68px; border-radius: 16px 16px 0 0; }
+              .nx-tube-container[data-nx-size="large"] .nx-char { font-size: 52px; }
+              .nx-tube-container[data-nx-size="medium"] { height: 60px; display: inline-flex; vertical-align: bottom; }
+              .nx-tube-container[data-nx-size="medium"] .nx-tube { width: 24px; height: 56px; border-radius: 12px 12px 0 0; }
+              .nx-tube-container[data-nx-size="medium"] .nx-char { font-size: 40px; }
+              .nx-tube-container[data-nx-size="small"] { height: 40px; display: inline-flex; vertical-align: bottom; }
+              .nx-tube-container[data-nx-size="small"] .nx-tube { width: 18px; height: 36px; border-radius: 9px 9px 0 0; }
+              .nx-tube-container[data-nx-size="small"] .nx-char { font-size: 24px; }
+              .nx-tube-dot { width: 10px !important; border-radius: 5px 5px 0 0 !important; }
+              .nx-tube-container[data-nx-size="medium"] .nx-tube-dot { height: 56px !important; width: 8px !important; }
+              .nx-tube-dot .nx-char { font-size: 32px !important; align-items: flex-end; padding-bottom: 4px; }
+              .nx-tube-container[data-nx-size="medium"] .nx-tube-dot .nx-char { font-size: 24px !important; padding-bottom: 2px; }
+          `;
+          document.head.appendChild(style);
+
+          // Setup PTY and Flags
+          if (!visEqActive) {
+              const flagContainers =[
+                  document.getElementById('flags-container-desktop'),
+                  document.getElementById('flags-container-phone')
+              ];
+
+              flagContainers.forEach((targetDiv, index) => {
+                  if (!targetDiv) return;
+                  Array.from(targetDiv.children).forEach(child => child.classList.add('nx-hide-original'));
+
+                  const suffix = index === 0 ? '-desktop' : '-phone';
+                  const block = document.createElement('div');
+                  block.className = 'nx-pty-block';
+                  
+                  block.innerHTML = `
+                      <div class="nx-tube-container" id="nx-pty${suffix}" data-nx-size="small"></div>
+                      <div class="nx-flags-row">
+                          <div class="nx-tube-container" id="nx-tp${suffix}" data-nx-size="small"></div>
+                          <div class="nx-tube-container" id="nx-ta${suffix}" data-nx-size="small"></div>
+                          <div class="nx-ecc-wrapper" id="nx-ecc${suffix}"></div> 
+                          <div class="nx-tube-container" id="nx-st${suffix}" data-nx-size="small"></div>
+                          <div class="nx-tube-container" id="nx-ms${suffix}" data-nx-size="small"></div>
+                      </div>
+                  `;
+                  targetDiv.appendChild(block);
+
+                  this.setTubeText(`nx-pty${suffix}`, '              ', false); // 14 spaces
+                  this.setTubeText(`nx-tp${suffix}`, 'TP', false);
+                  this.setTubeText(`nx-ta${suffix}`, 'TA', false);
+                  this.setTubeText(`nx-st${suffix}`, 'ST', false);
+                  this.setTubeText(`nx-ms${suffix}`, 'MS', false);
+              });
+
+              const originalFlag = document.querySelector('.data-flag');
+              if (originalFlag) {
+                  const updateEcc = () => {
+                      const dt = document.getElementById('nx-ecc-desktop');
+                      const ph = document.getElementById('nx-ecc-phone');
+                      if (dt) dt.innerHTML = originalFlag.innerHTML;
+                      if (ph) ph.innerHTML = originalFlag.innerHTML;
+                  };
+                  new MutationObserver(updateEcc).observe(originalFlag, { childList: true, subtree: true, attributes: true });
+                  updateEcc();
+              }['desktop', 'phone'].forEach(suffix => {
+                  const stTube = document.getElementById(`nx-st-${suffix}`);
+                  if (stTube) {
+                      stTube.title = "Stereo / Mono toggle";
+                      stTube.addEventListener('click', () => {
+                          const originalToggle = document.getElementById('stereoIcon') || document.querySelector('.stereo-container');
+                          if (originalToggle) originalToggle.click();
+                      });
+                  }
+              });
+
+              const checkInitialDomState = (selector) => {
+                  const el = document.querySelector(selector);
+                  if (!el) return false;
+                  return parseFloat(window.getComputedStyle(el).opacity) > 0.5 && !el.classList.contains('text-gray');
+              };
+
+              ['desktop', 'phone'].forEach(suffix => {
+                  this.setTubeFlag(`nx-tp-${suffix}`, checkInitialDomState('.data-tp'));
+                  this.setTubeFlag(`nx-ta-${suffix}`, checkInitialDomState('.data-ta'));
+                  this.setTubeText(`nx-ms-${suffix}`, 'MS', checkInitialDomState('.data-ms'));
+                  
+                  const stEl = document.querySelector('.stereo-container .data-st');
+                  if (stEl) this.setTubeFlag(`nx-st-${suffix}`, parseFloat(window.getComputedStyle(stEl).opacity) > 0.5);
+              });
+          }
+
+          // WebSocket Connection
+          const attachNixieWebSocket = () => {
+              if (typeof window.socketPromise !== 'undefined') {
+                  window.socketPromise.then(ws => {
+                      ws.addEventListener("message", (evt) => {
+                          try {
+                              const message = JSON.parse(evt.data);
+
+                              if (message.pty !== undefined && message.pty !== null) {
+                                  let ptyIndex = Number(message.pty);
+                                  if (Number.isNaN(ptyIndex) || ptyIndex < 0 || ptyIndex >= this.PTY_TABLE.length) ptyIndex = 0;
+                                  let ptyText = this.PTY_TABLE[ptyIndex];
+                                  let isOn = ptyText !== "PTY";
+                                  
+                                  let formattedPty;
+                                  if (ptyText.length >= 14) {
+                                      formattedPty = ptyText.substring(0, 14); 
+                                  } else {
+                                      let leftSpaces = Math.floor((14 - ptyText.length) / 2);
+                                      let rightSpaces = 14 - ptyText.length - leftSpaces;
+                                      formattedPty = ' '.repeat(leftSpaces) + ptyText + ' '.repeat(rightSpaces);
+                                  }
+                                  this.setTubeText('nx-pty-desktop', formattedPty, isOn);
+                                  this.setTubeText('nx-pty-phone', formattedPty, isOn);
+                              }
+                              if (message.tp !== undefined && message.tp !== null) {
+                                  let isOn = (message.tp === 1 || message.tp === true);
+                                  this.setTubeFlag('nx-tp-desktop', isOn);
+                                  this.setTubeFlag('nx-tp-phone', isOn);
+                              }
+                              if (message.ta !== undefined && message.ta !== null) {
+                                  let isOn = (message.ta === 1 || message.ta === true);
+                                  this.setTubeFlag('nx-ta-desktop', isOn);
+                                  this.setTubeFlag('nx-ta-phone', isOn);
+                              }
+                              if (message.st !== undefined && message.st !== null) {
+                                  let isOn = (message.st === 1 || message.st === true);
+                                  this.setTubeFlag('nx-st-desktop', isOn);
+                                  this.setTubeFlag('nx-st-phone', isOn);
+                              }
+                              let updateMS = false;
+                              if (message.ms !== undefined && message.ms !== null) {
+                                  this._nxHasWSMS = true;
+                                  this._nxState.ms = (message.ms === 1 || message.ms === true) ? 1 : 0;
+                                  updateMS = true;
+                              }
+                              if (message.lic !== undefined && message.lic !== null) {
+                                  this._nxState.lic = (message.lic === 1 || message.lic === true) ? 1 : 0;
+                                  updateMS = true;
+                              }
+                              if (updateMS) {
+                                  let msText = 'MS'; 
+                                  let turnOn = false;
+                                  if (this._nxState.ms === 1) {
+                                      turnOn = true;
+                                      msText = (this._nxState.lic === 0) ? 'M ' : ' S';
+                                  }
+                                  this.setTubeText('nx-ms-desktop', msText, turnOn);
+                                  this.setTubeText('nx-ms-phone', msText, turnOn);
+                              }
+                          } catch (err) { }
+                      });
+                  }).catch(() => setTimeout(attachNixieWebSocket, 1000));
+              } else {
+                  setTimeout(attachNixieWebSocket, 1000);
+              }
+          };
+          attachNixieWebSocket();
+
+          if (!visEqActive) {
+              const msDOM = document.querySelector('.data-ms');
+              if (msDOM) {
+                  new MutationObserver(() => {
+                      if (this._nxHasWSMS) return; 
+                      let opacity = parseFloat(window.getComputedStyle(msDOM).opacity);
+                      let isOn = opacity > 0.8 && !msDOM.classList.contains('text-gray');
+                      this.setTubeText('nx-ms-desktop', 'MS', isOn); 
+                      this.setTubeText('nx-ms-phone', 'MS', isOn);   
+                  }).observe(msDOM, { attributes: true, attributeFilter:['style', 'class'] });
+              }
+          }
+
+          // Tubes: FREQ, PS, PI, SIGNAL
+          const decElem = document.getElementById('data-signal-decimal');
+          const configs =[
+              { sel: '#data-frequency', type: 'FREQ', size: 'large' },
+              { sel: '#data-pi', type: 'PI', size: 'large' },
+              { sel: '#data-signal', type: 'SIGNAL', size: 'medium' }
+          ];
+
+          if (!visEqActive) {
+              configs.push({ sel: '#data-ps', type: 'PS', size: 'large' });
+          }
+
+          configs.forEach(cfg => {
+              const elems = document.querySelectorAll(cfg.sel);
+              elems.forEach(originalElem => {
+                  if (!originalElem) return;
+                  originalElem.classList.add('nx-hide-original');
+
+                  const tubeDisplay = document.createElement('div');
+                  tubeDisplay.className = 'nx-tube-container';
+                  tubeDisplay.setAttribute('data-nx-size', cfg.size);
+                  originalElem.parentNode.insertBefore(tubeDisplay, originalElem.nextSibling);
+
+                  const updateTubes = () => {
+                      let rawText = originalElem.textContent || '';
+                      let text = '';
+
+                      if (cfg.type === 'PS') text = rawText.padEnd(8, ' ').substring(0, 8);
+                      else if (cfg.type === 'PI') text = rawText.padStart(4, ' ').substring(0, 4);
+                      else if (cfg.type === 'FREQ') {
+                          let digits = rawText.replace('.', '').trim().padStart(6, ' ');
+                          text = digits.substring(0, 3) + '.' + digits.substring(3, 6);
+                      } else if (cfg.type === 'SIGNAL') {
+                          let decVal = decElem ? decElem.textContent.replace('.', '') : '0';
+                          text = rawText.trim().padStart(3, ' ').slice(-3) + '.' + decVal.substring(0, 1);
+                      }
+
+                      if (tubeDisplay.dataset.lastText === text) return;
+                      let oldText = tubeDisplay.dataset.lastText || "";
+                      tubeDisplay.dataset.lastText = text;
+
+                      if (tubeDisplay.children.length !== text.length) {
+                          tubeDisplay.innerHTML = '';
+                          for (let i = 0; i < text.length; i++) {
+                              tubeDisplay.appendChild(this.createTube(text[i], text[i] === '.'));
+                          }
+                      }
+
+                      const tubes = tubeDisplay.children;
+                      
+                      if (cfg.type === 'PS' && oldText !== "" && oldText !== text) {
+                          for (let i = 0; i < text.length; i++) {
+                              if (tubes[i].classList.contains('nx-tube-dot')) continue;
+                              let charDiv = tubes[i].querySelector('.nx-char');
+                              if (charDiv) {
+                                  charDiv.style.animation = 'nxSlideOutLeft 0.25s ease-in forwards';
+                                  setTimeout(() => {
+                                      if (text[i] === ' ' || text[i] === '') {
+                                          charDiv.classList.add('nx-off');
+                                      } else {
+                                          charDiv.innerText = text[i];
+                                          charDiv.classList.remove('nx-off');
+                                      }
+                                      charDiv.style.animation = 'nxSlideInRight 0.25s ease-out forwards';
+                                      setTimeout(() => { charDiv.style.animation = ''; }, 250);
+                                  }, 250);
+                              }
+                          }
+                      } else {
+                          for (let i = 0; i < text.length; i++) {
+                              if (tubes[i].classList.contains('nx-tube-dot')) continue;
+                              let charDiv = tubes[i].querySelector('.nx-char');
+                              if (charDiv) {
+                                  if (text[i] === ' ' || text[i] === '') charDiv.classList.add('nx-off');
+                                  else { charDiv.innerText = text[i]; charDiv.classList.remove('nx-off'); }
+                              }
+                          }
+                      }
+                  };
+
+                  updateTubes();
+                  const observer = new MutationObserver(updateTubes);
+                  observer.observe(originalElem, { characterData: true, childList: true, subtree: true });
+                  if (cfg.type === 'SIGNAL' && decElem) observer.observe(decElem, { characterData: true, childList: true, subtree: true });
+              });
+          });
+      }
+  };
+
+  // =========================================================================
   // WEBSOCKET INTERCEPTOR
   // =========================================================================
   const originalWebSocketSend = WebSocket.prototype.send;
@@ -2484,14 +3007,15 @@ let html = `<div style="font-size:16px; font-weight:bold; color:#fff; margin-bot
                       const freq = getGlobalCurrentFrequencyInMHz();
                       
                       if (freq < 30.0) {
-                          if ('Scan' in cmd) {
-                              if (cmd.Scan === 'on') _startLocalScanner('scan', 'up');
-                              else _stopLocalScanner();
-                          }
-                          if ('Search' in cmd) {
-                              _startLocalScanner('search', cmd.Search);
-                          }
-                          return; 
+                          // Scanner always sends both Scan and Search (one of them empty),
+                          // so act on the values. Other commands (sensitivity, mode, hold
+                          // time, config) go on to the Scanner server unchanged.
+                          // Deferred: Scanner sends on mouseup, then its click handler flips the
+                          // button as a guess until the server answers. Acting after the click,
+                          // like a server answer would, leaves the button in the right state.
+                          if (cmd.Scan === 'on') { setTimeout(() => _startLocalScanner('scan', 'up'), 0); return; }
+                          if (cmd.Scan === 'off') { setTimeout(() => _stopLocalScanner(), 0); return; }
+                          if (cmd.Search === 'up' || cmd.Search === 'down') { setTimeout(() => _startLocalScanner('search', cmd.Search), 0); return; }
                       }
                   }
               } catch(e) {}
@@ -2527,7 +3051,7 @@ let html = `<div style="font-size:16px; font-weight:bold; color:#fff; margin-bot
 
   const fetchPluginConfig = async () => {
     try {
-      const res = await fetch('/enhanced_tuning/api/auth-check');
+      const res = await fetch('/enhanced_tuning/api/auth-check', { cache: 'no-store' });
       if (res.ok) {
           const data = await res.json();
           pluginConfig = { ...pluginConfig, ...data.config };
@@ -2539,75 +3063,6 @@ let html = `<div style="font-size:16px; font-weight:bold; color:#fff; margin-bot
   };
 
   const injectSettingsIcon = () => {
-    if (!isAdmin) return;
-    const observer = new MutationObserver(() => {
-        const fmBtn = document.querySelector('.band-selector-button[data-band-key="FM"], .band-selector-button[data-band-name="FM"]');
-        const freqContainerForFallback = pluginConfig.HIDE_ALL_BUTTONS ? document.getElementById('freq-container') : null;
-        const anchor = fmBtn || freqContainerForFallback;
-        if (anchor && !document.getElementById('et-admin-btn')) {
-
-            const parentContainer = fmBtn ? fmBtn.closest('.side-band-button-container, .main-bands-wrapper') : freqContainerForFallback;
-            if (parentContainer) {
-                parentContainer.style.position = 'relative';
-                const freqContainer = document.getElementById('freq-container');
-                if (freqContainer && pluginConfig.LAYOUT_STYLE === 'classic') {
-                    freqContainer.style.overflow = 'visible';
-                }
-            }
-
-            const settingsBtn = document.createElement('button');
-            settingsBtn.id = 'et-admin-btn';
-            settingsBtn.innerHTML = '⚙️';
-            settingsBtn.title = 'Enhanced Tuning Settings';
-
-            settingsBtn.style.cssText = fmBtn ? `
-                position: absolute;
-                top: 0px;
-                left: ${pluginConfig.LAYOUT_STYLE === 'modern' ? '-45px' : '-28px'};
-                background: transparent;
-                border: none;
-                cursor: pointer;
-                font-size: 18px;
-                padding: 0; /* Fjerner all ekstra plass inni knappen */
-                width: 20px; /* Fast, liten bredde */
-                height: 20px; /* Fast, liten høyde */
-                transition: transform 0.2s, text-shadow 0.2s;
-                color: var(--color-text);
-                z-index: 1000;
-            ` : `
-                position: absolute;
-                top: 5px;
-                right: 5px;
-                background: transparent;
-                border: none;
-                cursor: pointer;
-                font-size: 18px;
-                padding: 0;
-                width: 20px;
-                height: 20px;
-                transition: transform 0.2s, text-shadow 0.2s;
-                color: var(--color-text);
-                z-index: 1000;
-            `;
-
-            settingsBtn.onmouseover = () => {
-                settingsBtn.style.transform = 'scale(1.2) rotate(45deg)';
-                settingsBtn.style.textShadow = '0 0 5px rgba(255,255,255,0.5)';
-            };
-            settingsBtn.onmouseout = () => {
-                settingsBtn.style.transform = 'scale(1) rotate(0deg)';
-                settingsBtn.style.textShadow = 'none';
-            };
-            settingsBtn.onclick = (e) => {
-                e.preventDefault(); e.stopPropagation();
-                window.open('/enhanced_tuning/AP', '_blank');
-            };
-
-            if (parentContainer) parentContainer.appendChild(settingsBtn);
-            else anchor.parentNode.insertBefore(settingsBtn, anchor);
-        }
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
   };
 
   const loadPluginStylesheet = () => {
@@ -3051,6 +3506,27 @@ body.layout-classic .sw-bands-bottom-wrapper {
 body.layout-classic .sw-band-button {
     padding: 1px 2px;
     text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 18px;   
+}
+
+/* Automatisk krymping av fonten ved innzooming eller på litt mindre skjermer */
+@media (max-width: 1550px) {
+    body.layout-classic .sw-band-button {
+        font-size: 7px;
+        height: 15.5px;
+        min-height: 15.5px;
+    }
+    
+    body.layout-classic #band-range-container,
+    body.layout-modern #band-range-container {
+        font-size: 9px !important;
+        gap: 5px !important;
+    }
 }
 body.layout-classic #band-range-container {
     position: absolute;
@@ -3194,12 +3670,11 @@ body.et-analog-active #sdr-graph {
     position: absolute !important;
     top: 0 !important;
     left: 0 !important;
-    z-index: 1 !important; /* Ligger skjult rett bak skalaen */
+    z-index: 1 !important;
     opacity: 1 !important; 
     pointer-events: none !important;
 }
 
-/* Skjuler ALT ANNET som krever ytelse, inkludert det originale runde signal-canvaset! */
 body.et-analog-active #signal-canvas,
 body.et-analog-active #Antenna,
 body.et-analog-active #containerRotator,
@@ -3256,19 +3731,18 @@ body.et-analog-active #mm-scope-flex {
   };
 
   const initAdminPanel = () => {
+      if (!pluginConfig || pluginConfig.overrideServerTuningLimit !== true) return;
+
       const globalLowerInput = document.getElementById('webserver-tuningLowerLimit');
       const globalUpperInput = document.getElementById('webserver-tuningUpperLimit');
       const origSwitchInput = document.getElementById('webserver-tuningLimit');
-      const saveBtn = document.getElementById('submit-config');
       
-      if (!globalLowerInput || !globalUpperInput || !pluginConfig) return;
-
-      if (!pluginConfig.overrideServerTuningLimit) return;
+      if (!globalLowerInput || !globalUpperInput) return;
 
       const parentDiv = globalLowerInput.parentNode;
       if (!parentDiv) return;
 
-      const origElementsToHide = [
+      const origElementsToHide =[
           globalLowerInput,
           document.querySelector('label[for="webserver-tuningLowerLimit"]'),
           globalUpperInput,
@@ -3280,103 +3754,30 @@ body.et-analog-active #mm-scope-flex {
       origElementsToHide.forEach(el => {
           if (el) {
               el.style.display = 'none';
-              if (el.nextElementSibling && el.nextElementSibling.tagName === 'BR') el.nextElementSibling.style.display = 'none';
+              if (el.nextElementSibling && el.nextElementSibling.tagName === 'BR') {
+                  el.nextElementSibling.style.display = 'none';
+              }
           }
       });
 
-      if (origSwitchInput && !origSwitchInput.checked) {
-          origSwitchInput.checked = true;
-          origSwitchInput.dispatchEvent(new Event('change', { bubbles: true }));
+      if (origSwitchInput && origSwitchInput.checked) {
+          origSwitchInput.checked = false;
       }
 
-      let origLow = parseFloat(globalLowerInput.value);
-      let origHigh = parseFloat(globalUpperInput.value);
-
-      let fmL = pluginConfig.fmLower;
-      let fmU = pluginConfig.fmUpper;
-      let amL = pluginConfig.amLower;
-      let amU = pluginConfig.amUpper;
-
-      const pluginExpectedMin = Math.min(fmL, amL);
-      const pluginExpectedMax = Math.max(fmU, amU);
-
-      if (!isNaN(origLow) && !isNaN(origHigh)) {
-          if (Math.abs(origLow - pluginExpectedMin) > 0.001 || Math.abs(origHigh - pluginExpectedMax) > 0.001) {
-              fmL = origLow;
-              amL = origLow;
-              fmU = origHigh;
-              amU = origHigh;
-          }
-      }
-
-      const etInputsContainer = document.createElement('div');
-      etInputsContainer.id = 'et-enhanced-inputs';
-      etInputsContainer.innerHTML = `
-          <div style="margin-bottom: 15px;">
-              <span style="font-weight: bold; text-transform: uppercase; color: var(--color-5); font-size: 13px;">Enhanced Tuning Limits</span>
-              <span style="font-size:12px; color:#aaa; display:block; margin-top:2px;">(Override toggled ON via Enhanced Settings Panel)</span>
-          </div>
-          <div style="display: flex; justify-content: flex-start; gap: 15px; flex-wrap: wrap; margin-bottom: 10px;">
-              <div>
-                  <label for="et-fm-lower" style="display: block; margin-bottom: 2px; font-weight: bold; font-size: 12px;">Lower FM limit (MHz)</label>
-                  <input type="text" id="et-fm-lower" value="${fmL}" class="input-text w-100 br-15" style="margin-top: 0; min-height: 40px; height: 40px;">
-              </div>
-              <div>
-                  <label for="et-fm-upper" style="display: block; margin-bottom: 2px; font-weight: bold; font-size: 12px;">Upper FM limit (MHz)</label>
-                  <input type="text" id="et-fm-upper" value="${fmU}" class="input-text w-100 br-15" style="margin-top: 0; min-height: 40px; height: 40px;">
-              </div>
-          </div>
-          <div style="display: flex; justify-content: flex-start; gap: 15px; flex-wrap: wrap; margin-bottom: 20px;">
-              <div>
-                  <label for="et-am-lower" style="display: block; margin-bottom: 2px; font-weight: bold; font-size: 12px;">Lower AM limit (MHz)</label>
-                  <input type="text" id="et-am-lower" value="${amL}" class="input-text w-100 br-15" style="margin-top: 0; min-height: 40px; height: 40px;">
-              </div>
-              <div>
-                  <label for="et-am-upper" style="display: block; margin-bottom: 2px; font-weight: bold; font-size: 12px;">Upper AM limit (MHz)</label>
-                  <input type="text" id="et-am-upper" value="${amU}" class="input-text w-100 br-15" style="margin-top: 0; min-height: 40px; height: 40px;">
-              </div>
-          </div>
-      `;
-      
-      parentDiv.insertBefore(etInputsContainer, globalLowerInput);
-
-      const syncGlobalLimits = () => {
-          const ui_fmL = parseFloat(document.getElementById('et-fm-lower').value) || 64.0;
-          const ui_amL = parseFloat(document.getElementById('et-am-lower').value) || 0.144;
-          const ui_fmU = parseFloat(document.getElementById('et-fm-upper').value) || 108.0;
-          const ui_amU = parseFloat(document.getElementById('et-am-upper').value) || 30.0;
-          
-          const minLim = Math.min(ui_fmL, ui_amL);
-          const maxLim = Math.max(ui_fmU, ui_amU);
-
-          globalLowerInput.value = minLim;
-          globalUpperInput.value = maxLim;
-          
-          globalLowerInput.dispatchEvent(new Event('input', { bubbles: true }));
-          globalUpperInput.dispatchEvent(new Event('input', { bubbles: true }));
-      };['et-fm-lower', 'et-am-lower', 'et-fm-upper', 'et-am-upper'].forEach(id => {
-          document.getElementById(id).addEventListener('input', syncGlobalLimits);
-      });
-
-      syncGlobalLimits();
-
-      if (saveBtn) {
-          saveBtn.addEventListener('click', () => {
-              syncGlobalLimits();
-              
-              const updatedLimits = {
-                  fmLower: parseFloat(document.getElementById('et-fm-lower').value),
-                  fmUpper: parseFloat(document.getElementById('et-fm-upper').value),
-                  amLower: parseFloat(document.getElementById('et-am-lower').value),
-                  amUpper: parseFloat(document.getElementById('et-am-upper').value),
-              };
-              
-              fetch('/enhanced_tuning/api/config', { 
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(updatedLimits)
-              }).catch(err => console.error("[Enhanced Tuning] Error saving limits", err));
-          });
+      if (!document.getElementById('et-limits-notice')) {
+          const infoMsg = document.createElement('div');
+          infoMsg.id = 'et-limits-notice';
+          infoMsg.style.cssText = "background: rgba(52, 152, 219, 0.1); border-left: 4px solid #3498db; padding: 15px; margin-bottom: 20px; border-radius: 4px;";
+          infoMsg.innerHTML = `
+              <h4 style="margin: 0 0 10px 0; color: #3498db; font-size: 16px;">Tuning Limits Managed by Plugin</h4>
+              <p style="margin: 0 0 10px 0; font-size: 14px; color: var(--color-text); opacity: 0.8;">
+                  The native tuning limit is paused while Enhanced Tuning enforces its own AM and FM limits on the server. Configure them in the Enhanced Tuning Admin Panel; changes apply immediately.
+              </p>
+              <a href="/enhanced_tuning/AP" target="_blank" style="display: inline-block; background: #3498db; color: white; padding: 8px 15px; text-decoration: none; border-radius: 4px; font-weight: bold; font-size: 13px; transition: background 0.2s;">
+                  Open Enhanced Tuning Settings
+              </a>
+          `;
+          parentDiv.insertBefore(infoMsg, globalLowerInput);
       }
   };
 
@@ -3387,124 +3788,220 @@ body.et-analog-active #mm-scope-flex {
           return;
       }
 
-      const imperialInput = document.getElementById('imperial-units');
-      if (!imperialInput || document.getElementById('et-user-settings-wrapper')) return;
+      if (!pluginConfig.ENABLE_ANALOG_SCALE) return;
 
-      let baseWrapper = imperialInput;
-      while (baseWrapper.parentElement && !baseWrapper.parentElement.classList.contains('auto')) {
-          baseWrapper = baseWrapper.parentElement;
-      }
+      const loginMessage = document.getElementById('login-message');
+      if (!loginMessage || document.getElementById('btn-open-retro-modal')) return;
 
-      const container = document.createElement('div');
-      container.id = 'et-user-settings-wrapper';
-      container.style.marginTop = '15px';
-      container.style.marginBottom = '15px';
-      container.style.borderTop = '1px solid rgba(255,255,255,0.1)';
-      container.style.paddingTop = '15px';
+      const btnWrapper = document.createElement('div');
+      btnWrapper.style.cssText = "margin: 20px auto; width: 215px; height: 48px;";
+      
+      const openModalBtn = document.createElement('button');
+      openModalBtn.id = 'btn-open-retro-modal';
+      openModalBtn.style.fontWeight = "bold";
+      openModalBtn.textContent = 'Enhanced / Retro Settings';
+      
+      btnWrapper.appendChild(openModalBtn);
+      loginMessage.parentNode.insertBefore(btnWrapper, loginMessage.nextSibling);
 
-      function addToggle(id, labelText, checkedState, onChange) {
-          const clone = baseWrapper.cloneNode(true);
-          const input = clone.querySelector('input');
-          if (input) {
-              input.id = id;
-              input.checked = checkedState;
-              input.addEventListener('change', onChange);
-          }
-          function replaceText(node) {
-              if (node.nodeType === 3 && /imperial units/i.test(node.nodeValue)) {
-                  node.nodeValue = node.nodeValue.replace(/imperial units/i, labelText);
-              } else {
-                  if (node.tagName === 'LABEL' && node.getAttribute('for') === 'imperial-units') {
-                      node.setAttribute('for', id);
-                  }
-                  node.childNodes.forEach(replaceText);
-              }
-          }
-          replaceText(clone);
-          container.appendChild(clone);
-      }
-
-      if (pluginConfig.ENABLE_VU_METER) {
-          let isVuEnabled = localStorage.getItem('et_user_vu_enabled') !== 'false';
-          addToggle('et-vu-toggle', 'SHOW VU METER', isVuEnabled, (e) => {
-              localStorage.setItem('et_user_vu_enabled', e.target.checked);
-              AnalogScaleEngine.applyScaleLayout();
-          });
-      }
-
-      if (pluginConfig.ENABLE_MAGIC_EYE) {
-          let isMagicEyeEnabled = localStorage.getItem('et_user_magic_eye') !== 'false';
-          addToggle('et-magic-eye-toggle', 'SHOW MAGIC EYE', isMagicEyeEnabled, (e) => {
-              localStorage.setItem('et_user_magic_eye', e.target.checked);
-              MagicEyeEngine.toggleVisibility();
-          });
-      }
-
-      if (pluginConfig.ENABLE_PS_SCALE) {
-          let isPsEnabled = localStorage.getItem('et_user_ps_scale') !== 'false';
-          addToggle('et-ps-toggle', 'SHOW PS STATIONS', isPsEnabled, (e) => {
-              localStorage.setItem('et_user_ps_scale', e.target.checked);
-              if (AnalogScaleEngine.scaleCanvas) AnalogScaleEngine.drawScale(AnalogScaleEngine.scaleCanvas, AnalogScaleEngine.animFreq);
-          });
-      }
-
-      if (pluginConfig.ENABLE_SPECTRUM_OVERLAY) {
-          let isSpecEnabled = localStorage.getItem('et_user_spectrum_overlay') !== 'false';
-          addToggle('et-spec-toggle', 'SHOW SPECTRUM', isSpecEnabled, (e) => {
-              localStorage.setItem('et_user_spectrum_overlay', e.target.checked);
-              if (AnalogScaleEngine.scaleCanvas) AnalogScaleEngine.drawScale(AnalogScaleEngine.scaleCanvas, AnalogScaleEngine.animFreq);
-          });
-      }
-
-      if (pluginConfig.ENABLE_SW_STATIONS_SCALE) {
-          let isSwScaleEnabled = localStorage.getItem('et_user_sw_scale') !== 'false';
-          addToggle('et-sw-scale-toggle', 'SHOW SW STATIONS', isSwScaleEnabled, (e) => {
-              localStorage.setItem('et_user_sw_scale', e.target.checked);
-              if (e.target.checked && AnalogScaleEngine.currentKey && AnalogScaleEngine.currentKey.endsWith('m')) {
-                  AnalogScaleEngine.fetchSwStations(AnalogScaleEngine.currentMin, AnalogScaleEngine.currentMax);
-              } else if (AnalogScaleEngine.scaleCanvas) {
-                  AnalogScaleEngine.drawScale(AnalogScaleEngine.scaleCanvas, AnalogScaleEngine.animFreq);
-              }
-          });
-      }
-      if (pluginConfig.ENABLE_ANALOG_SCALE) {
-          let currentBrightness = parseFloat(localStorage.getItem('et_user_scale_brightness')) || pluginConfig.ANALOG_SCALE_BRIGHTNESS;
-          const sliderDiv = document.createElement('div');
-          sliderDiv.className = 'panel-full flex-center no-bg m-0';
-          sliderDiv.style.flexDirection = 'column';
-          sliderDiv.style.marginTop = '15px';
-          sliderDiv.innerHTML = `
-              <span class="text-bold" style="color: var(--color-4); text-transform: uppercase; font-size: 13px; margin-bottom: 5px;">FM Scale Brightness</span>
-              <div style="width: 200px;">
-                  <input type="range" id="et-analog-scale-brightness" min="0.2" max="1.8" step="0.05" value="${currentBrightness}" style="width: 100%; cursor: pointer; margin: 0;">
+      const modal = document.createElement('div');
+      modal.className = 'modal';
+      modal.id = 'retro-settings-modal';
+      
+      const createToggle = (id, label, checked) => `
+          <div style="display: flex; justify-content: space-between; align-items: center; background: var(--color-1); padding: 12px 15px; border-radius: 10px;">
+              <span style="font-size: 16px; font-weight: 500;">${label}</span>
+              <div class="switch">
+                  <input type="checkbox" id="${id}" ${checked ? 'checked' : ''}>
+                  <label for="${id}"></label>
               </div>
-          `;
-          const slider = sliderDiv.querySelector('input');
-          slider.addEventListener('input', (e) => {
+          </div>`;
+          
+      const createSelect = (id, label, options, selected) => {
+          let opts = options.map(o => `<option value="${o.val}" ${o.val === selected ? 'selected' : ''}>${o.label}</option>`).join('');
+          return `
+          <div style="display: flex; justify-content: space-between; align-items: center; background: var(--color-1); padding: 12px 15px; border-radius: 10px;">
+              <span style="font-size: 16px; font-weight: 500;">${label}</span>
+              <select id="${id}" style="width: auto; min-width: 150px; border-radius: 8px;">
+                  ${opts}
+              </select>
+          </div>`;
+      };
+
+      const createSlider = (id, label, min, max, step, val) => `
+          <div style="display: flex; flex-direction: column; background: var(--color-1); padding: 15px; border-radius: 10px; gap: 12px;">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <span style="font-size: 16px; font-weight: 500;">${label}</span>
+                  <span id="${id}-val" style="color: var(--color-4); font-weight: bold; font-size: 16px;">${val}</span>
+              </div>
+              <div style="height: 24px;">
+                  <input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${val}" style="margin:0;">
+              </div>
+          </div>`;
+
+      let layoutStyle = pluginConfig.LAYOUT_STYLE;
+      let isAutostart = userPref('et_user_analog_autostart', 'ANALOG_SCALE_AUTOSTART');
+      let isKnobEnabled = userPref('et_user_tuning_knob', 'SHOW_TUNING_KNOB');
+      let isVuEnabled = userPref('et_user_vu_enabled', 'ENABLE_VU_METER');
+      let isMagicEyeEnabled = userPref('et_user_magic_eye', 'ENABLE_MAGIC_EYE');
+      let isNixieEnabled = userPref('et_user_nixie_enabled', 'ENABLE_NIXIE_TUBES');
+      let isPsEnabled = userPref('et_user_ps_scale', 'ENABLE_PS_SCALE');
+      let isSpecEnabled = userPref('et_user_spectrum_overlay', 'ENABLE_SPECTRUM_OVERLAY');
+      let isSwScaleEnabled = userPref('et_user_sw_scale', 'ENABLE_SW_STATIONS_SCALE');
+      let currentBrightness = parseFloat(localStorage.getItem('et_user_scale_brightness')) || pluginConfig.ANALOG_SCALE_BRIGHTNESS;
+
+      modal.innerHTML = `
+          <style>
+              #et-admin-modal-btn {
+                  position: absolute !important;
+                  right: 15px !important;
+                  top: 15px !important;
+                  width: 40px !important;
+                  height: 30px !important;
+                  background: var(--color-4) !important;
+                  color: var(--color-main) !important;
+                  font-weight: 900 !important;
+                  font-size: 14px !important;
+                  border-radius: 6px !important;
+                  display: flex !important;
+                  align-items: center !important;
+                  justify-content: center !important;
+                  cursor: pointer !important;
+                  z-index: 9999 !important;
+                  box-shadow: 0 2px 5px rgba(0,0,0,0.4) !important;
+                  transition: all 0.2s ease !important;
+                  border: none !important;
+                  line-height: 1 !important;
+              }
+              #et-admin-modal-btn:hover { 
+                  background: var(--color-5) !important; 
+                  transform: scale(1.05) !important; 
+              }
+              .settings-section-header { font-size: 13px; font-weight: bold; color: var(--color-4); text-transform: uppercase; margin-top: 15px; margin-bottom: 2px; letter-spacing: 1px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 5px; }
+              .settings-section-header:first-child { margin-top: 5px; }
+          </style>
+          <div class="modal-content" style="max-width: 500px; padding: 25px; position: relative;">
+              
+              <!-- Diskret AP-knapp plassert der krysset pleide å være -->
+              ${isAdmin ? `<div id="et-admin-modal-btn" title="Open Admin Panel">AP</div>` : ''}
+              
+              <div style="margin-bottom: 20px; padding-right: 50px;">
+                  <h2 class="modal-title" style="color: var(--color-4); margin: 0; font-weight: bold; font-size: 20px; border-bottom: none; padding-bottom: 0; line-height: 1.2;">Plugin Settings</h2>
+              </div>
+              
+              <div style="display: flex; flex-direction: column; gap: 12px; max-height: 60vh; overflow-y: auto; padding-right: 5px;">
+                  
+                  <div class="settings-section-header">Enhanced Tuning Settings</div>
+                  
+                  ${createSelect('modal-layout-style', 'Layout Style',[
+                      {val: 'modern', label: 'Modern'},
+                      {val: 'classic', label: 'Classic (Compact)'}
+                  ], layoutStyle)}
+                  
+                  <div class="settings-section-header">Retro Design Elements</div>
+                  
+                  ${pluginConfig.ANALOG_SCALE_AUTOSTART ? createToggle('modal-autostart-toggle', 'Autostart FM Scale', isAutostart) : ''}
+                  ${pluginConfig.SHOW_TUNING_KNOB ? createToggle('modal-knob-toggle', 'Show Tuning Knob', isKnobEnabled) : ''}
+                  ${pluginConfig.ENABLE_VU_METER ? createToggle('modal-vu-toggle', 'Show VU Meter', isVuEnabled) : ''}
+                  ${pluginConfig.ENABLE_MAGIC_EYE ? createToggle('modal-magic-eye-toggle', 'Show Magic Eye Tube', isMagicEyeEnabled) : ''}
+                  ${pluginConfig.ENABLE_NIXIE_TUBES ? createToggle('modal-nixie-toggle', 'Show Nixie Tubes', isNixieEnabled) : ''}
+                  ${pluginConfig.ENABLE_PS_SCALE ? createToggle('modal-ps-toggle', 'Scale: RDS Station Names', isPsEnabled) : ''}
+                  ${pluginConfig.ENABLE_SPECTRUM_OVERLAY ? createToggle('modal-spec-toggle', 'Scale: Spectrum Overlay', isSpecEnabled) : ''}
+                  ${pluginConfig.ENABLE_SW_STATIONS_SCALE ? createToggle('modal-sw-scale-toggle', 'Scale: SW Stations', isSwScaleEnabled) : ''}
+                  
+                  ${createSlider('modal-scale-brightness', 'FM Scale Brightness', '0.2', '1.8', '0.05', currentBrightness)}
+              </div>
+              
+              <button class="button-close" id="retro-modal-close-btn" style="position: static; margin-top: 25px; width: 100%;">Close Settings</button>
+          </div>
+      `;
+
+      document.body.appendChild(modal);
+
+      const apBtn = document.getElementById('et-admin-modal-btn');
+      if (apBtn) {
+          apBtn.addEventListener('click', (e) => {
+              e.preventDefault(); e.stopPropagation();
+              window.open('/enhanced_tuning/AP', '_blank');
+          });
+      }
+
+      const closeModal = () => {
+          modal.style.opacity = '0';
+          setTimeout(() => { modal.style.display = 'none'; document.body.classList.remove('modal-open'); }, 300);
+      };
+
+      openModalBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          modal.style.display = 'block';
+          document.body.classList.add('modal-open');
+          setTimeout(() => modal.style.opacity = '1', 10);
+      });
+
+      document.getElementById('retro-modal-close-btn').addEventListener('click', closeModal);
+      modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+
+      const addListener = (id, key, callback) => {
+          const el = document.getElementById(id);
+          if (el) el.addEventListener('change', (e) => {
+              if (el.type === 'checkbox') localStorage.setItem(key, e.target.checked);
+              else localStorage.setItem(key, e.target.value);
+              if (callback) callback(e);
+          });
+      };
+
+      addListener('modal-layout-style', 'et_user_layout_style', () => {
+          if (confirm("Changing layout requires reloading the page. Reload now?")) {
+              window.location.reload();
+          }
+      });
+
+      addListener('modal-autostart-toggle', 'et_user_analog_autostart');
+      addListener('modal-knob-toggle', 'et_user_tuning_knob', () => AnalogScaleEngine.applyScaleLayout());
+      addListener('modal-vu-toggle', 'et_user_vu_enabled', () => AnalogScaleEngine.applyScaleLayout());
+      addListener('modal-magic-eye-toggle', 'et_user_magic_eye', () => MagicEyeEngine.toggleVisibility());
+      addListener('modal-nixie-toggle', 'et_user_nixie_enabled', () => NixieTubeEngine.applyState());
+      
+      addListener('modal-ps-toggle', 'et_user_ps_scale', () => {
+          if (AnalogScaleEngine.scaleCanvas) AnalogScaleEngine.drawScale(AnalogScaleEngine.scaleCanvas, AnalogScaleEngine.animFreq);
+      });
+      
+      addListener('modal-spec-toggle', 'et_user_spectrum_overlay', () => {
+          if (AnalogScaleEngine.scaleCanvas) AnalogScaleEngine.drawScale(AnalogScaleEngine.scaleCanvas, AnalogScaleEngine.animFreq);
+      });
+      
+      addListener('modal-sw-scale-toggle', 'et_user_sw_scale', (e) => {
+          if (e.target.checked && AnalogScaleEngine.currentKey && AnalogScaleEngine.currentKey.endsWith('m')) {
+              AnalogScaleEngine.fetchSwStations(AnalogScaleEngine.currentMin, AnalogScaleEngine.currentMax);
+          } else if (AnalogScaleEngine.scaleCanvas) {
+              AnalogScaleEngine.drawScale(AnalogScaleEngine.scaleCanvas, AnalogScaleEngine.animFreq);
+          }
+      });
+
+      const brightSlider = document.getElementById('modal-scale-brightness');
+      if (brightSlider) {
+          brightSlider.addEventListener('input', (e) => {
+              document.getElementById('modal-scale-brightness-val').innerText = e.target.value;
               localStorage.setItem('et_user_scale_brightness', parseFloat(e.target.value));
               AnalogScaleEngine.lastKnobState = "";
           });
-          container.appendChild(sliderDiv);
-      }
-
-      if (container.childNodes.length > 0) {
-          baseWrapper.parentNode.insertBefore(container, baseWrapper.nextSibling);
       }
   };
 
   const initializePlugin = () => {
     try {
-        const enabledBandsList = Array.isArray(pluginConfig.ENABLED_BANDS) ? pluginConfig.ENABLED_BANDS : ['FM', 'OIRT', 'SW', 'MW', 'LW'];
+        const userLayoutStyle = localStorage.getItem('et_user_layout_style');
+        if (userLayoutStyle === 'modern' || userLayoutStyle === 'classic') pluginConfig.LAYOUT_STYLE = userLayoutStyle;
+        const enabledBandsList = Array.isArray(pluginConfig.ENABLED_BANDS) ? pluginConfig.ENABLED_BANDS :['FM', 'OIRT', 'SW', 'MW', 'LW'];
 
         checkForGradientPluginAndApplyStyles();
         injectSettingsIcon();
         injectUserSettingsUI();
 
-        
-
-        // INIT ANALOG SCALE
+        // INIT RETRO MODULES
         AnalogScaleEngine.init();
         MagicEyeEngine.init();
+        NixieTubeEngine.init();
 
         if (!pluginConfig.ENABLE_AM_BW && (typeof console !== 'undefined')) {
           if (pluginConfig.ENABLE_DEFAULT_AM_BW) console.warn('[BandSelector] ENABLE_DEFAULT_AM_BW set but ENABLE_AM_BW is false.');
@@ -3849,6 +4346,17 @@ body.et-analog-active #mm-scope-flex {
         const LAST_FREQS_STORAGE_KEY = 'bandSelectorLastFreqs';
         const FULL_SW_MODE_KEY = 'bandSelectorFullSwMode';
 
+        const getStoredFreqOrTune = (bKey, bData) => {
+            if (!bData) return 0;
+            const lastFreqs = pluginConfig.ENABLE_FREQUENCY_MEMORY ? (JSON.parse(localStorage.getItem(LAST_FREQS_STORAGE_KEY)) || {}) : {};
+            let f = lastFreqs[bKey];
+            
+            if (f === undefined || f === null || f < bData.start || f > bData.end) {
+                return bData.tune;
+            }
+            return f;
+        };
+
         let loopEnabled = localStorage.getItem(LOOP_STORAGE_KEY) === 'true';
         if (!pluginConfig.SHOW_LOOP_BUTTON) { loopEnabled = false; localStorage.setItem(LOOP_STORAGE_KEY, 'false'); }
 
@@ -3884,6 +4392,7 @@ body.et-analog-active #mm-scope-flex {
             if (scanBtn) {
                 scanBtn.classList.remove('bg-color-4');
                 scanBtn.dataset.scanStatus = "off";
+                scanBtn.style.backgroundColor = 'var(--color-3)'; // Scanner's click handler sets it inline
             }
             if (btnDown) btnDown.style.display = '';
             if (btnUp) btnUp.style.display = '';
@@ -3905,7 +4414,7 @@ body.et-analog-active #mm-scope-flex {
             }
             if (currentFreq >= ALL_BANDS['MW'].start && currentFreq <= ALL_BANDS['MW'].end) {
                 activeBandKey = 'MW'; bStart = ALL_BANDS['MW'].start; bEnd = ALL_BANDS['MW'].end;
-                const is10kHz = localStorage.getItem('mwStepPreference') === 'true' || pluginConfig.TUNING_STANDARD === 'americas';
+                const is10kHz = getMwStepKHz() === 10;
                 stepSize = is10kHz ? 0.010 : 0.009;
             }
             else if (currentFreq >= ALL_BANDS['LW'].start && currentFreq <= ALL_BANDS['LW'].end) {
@@ -3955,7 +4464,7 @@ body.et-analog-active #mm-scope-flex {
                 const searchUp = document.getElementById('search-up');
                 const blinkers = document.querySelectorAll('.autoscan-blink');
 
-                if (scanBtn) { scanBtn.classList.add('bg-color-4'); scanBtn.dataset.scanStatus = "on"; }
+                if (scanBtn) { scanBtn.classList.add('bg-color-4'); scanBtn.dataset.scanStatus = "on"; scanBtn.style.backgroundColor = 'var(--color-4)'; }
                 if (btnDown) btnDown.style.display = 'none'; if (btnUp) btnUp.style.display = 'none';
                 if (searchDown) searchDown.style.display = 'none'; if (searchUp) searchUp.style.display = 'none';
                 blinkers.forEach(b => b.style.display = 'inline-block');
@@ -4140,41 +4649,30 @@ body.et-analog-active #mm-scope-flex {
             freqContainer.addEventListener('wheel', (e) => tuneEventHandler(e, e.deltaY < 0 ? 'up' : 'down'), true);
             if(tuneUpButton) tuneUpButton.addEventListener('click', (e) => tuneEventHandler(e, 'up'), true);
             if(tuneDownButton) tuneDownButton.addEventListener('click', (e) => tuneEventHandler(e, 'down'), true);
-            freqContainer.addEventListener('wheel', (e) => tuneEventHandler(e, e.deltaY < 0 ? 'up' : 'down'), true);
-            if(tuneUpButton) tuneUpButton.addEventListener('click', (e) => tuneEventHandler(e, 'up'), true);
-            if(tuneDownButton) tuneDownButton.addEventListener('click', (e) => tuneEventHandler(e, 'down'), true);
             
-            // --- FIX FOR FAST FREQUENCY & INNER KNOB VISUALS ---
             let lastKeyTuneTime = 0;
             let finalKeyTuneTimer = null;
             let virtualKeyFreq = null;
 
             document.addEventListener('keydown', (e) => {
-                // 1. Ignore if typing into an input field
                 if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) return;
 
                 if (e.key === 'ArrowUp' || e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'ArrowLeft') {
-                    
-                    // 2. Hard block native webserver hotkeys to prevent ESP32 crashes
                     e.preventDefault();
                     e.stopImmediatePropagation();
                     e.stopPropagation();
 
-                    // 3. DETERMINE DIRECTION (Restored to standard: Up/Right = increase, Down/Left = decrease)
                     let direction;
                     if (e.key === 'ArrowRight' || e.key === 'ArrowUp') direction = 'up';
                     else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') direction = 'down';
 
                     const isFineTuning = (e.key === 'ArrowUp' || e.key === 'ArrowDown'); 
 
-                    // 4. CRITICAL FIX FOR THE INTEGRATED ANALOG SCALE ENGINE
-                    // Tells the Canvas Engine directly which knob should be animated
                     if (typeof AnalogScaleEngine !== 'undefined') {
                         AnalogScaleEngine.isFineTuningMode = isFineTuning;
-                        AnalogScaleEngine.lastKnobState = ""; // Forces immediate redraw of the knobs
+                        AnalogScaleEngine.lastKnobState = ""; 
                     }
 
-                    // 5. Engine for scrolling
                     let handledByCustom = false;
                     if (typeof handleCustomStepTune === 'function') {
                         const now = Date.now();
@@ -4200,11 +4698,10 @@ body.et-analog-active #mm-scope-flex {
                         } else if (ssb) {
                             step = 0.001;
                         } else {
-                            // OUTER KNOB: Standard Left/Right tuning logic
                             if (baseFreq < 30.0) {
                                 step = 0.005; 
                                 if (baseFreq >= ALL_BANDS['MW'].start && baseFreq <= ALL_BANDS['MW'].end) {
-                                    const is10kHz = localStorage.getItem('mwStepPreference') === 'true' || pluginConfig.TUNING_STANDARD === 'americas';
+                                    const is10kHz = getMwStepKHz() === 10;
                                     step = is10kHz ? 0.010 : 0.009;
                                 } else if (baseFreq >= ALL_BANDS['LW'].start && baseFreq <= ALL_BANDS['LW'].end) {
                                     step = 0.009;
@@ -4229,7 +4726,6 @@ body.et-analog-active #mm-scope-flex {
                             }
                         }
 
-                        // 6. FORCE DOM UPDATE
                         const freqDisplay = document.getElementById('frequency') || document.querySelector('.freq-value');
                         if (freqDisplay) {
                             freqDisplay.innerText = virtualKeyFreq.toFixed(decimals);
@@ -4237,7 +4733,6 @@ body.et-analog-active #mm-scope-flex {
                         
                         if (typeof updateVisualsByFrequency === 'function') updateVisualsByFrequency(virtualKeyFreq);
 
-                        // 7. Throttling / Debouncing to protect the ESP32
                         const now = Date.now();
                         if (now - lastKeyTuneTime > 200) {
                             safeTuneToFrequency(virtualKeyFreq.toFixed(decimals));
@@ -4253,7 +4748,6 @@ body.et-analog-active #mm-scope-flex {
                     }
                 }
             }, true);
-            // -------------------------------------------------------------
         }
         
         let updateVisualsByFrequency;
@@ -4366,6 +4860,7 @@ body.et-analog-active #mm-scope-flex {
                 
                 // ANALOG SCALE BINDING (MODERN)
                 AnalogScaleEngine.updateBand(bandForDisplay, freqInMHz, currentSwKey || currentMainKey);
+                announceBandChange(currentSwKey || currentMainKey, bandForDisplay, freqInMHz);
 
                 if (amBandKeys.includes(currentMainKey)) localStorage.setItem('bandSelectorLastAmBand', currentMainKey);
                 const activeKeys = new Set();
@@ -4417,18 +4912,18 @@ body.et-analog-active #mm-scope-flex {
                     if (shouldCreate) {
                         const btn = createBandButton(key, { displayName: key === 'AM' ? ALL_BANDS['AM_SUPER'].name : ALL_BANDS[key].name }, 'band-selector-button');
                         btn.addEventListener('click', () => {
-                            const lastFreqs = pluginConfig.ENABLE_FREQUENCY_MEMORY ? (JSON.parse(localStorage.getItem(LAST_FREQS_STORAGE_KEY)) || {}) : {};
                             let targetFreq;
                             if (isAmButton) {
                                 const lastAmBand = localStorage.getItem('bandSelectorLastAmBand');
-                                if (lastAmBand && enabledBandsList.includes(lastAmBand) && lastFreqs[lastAmBand]) targetFreq = lastFreqs[lastAmBand];
-                                else {
+                                if (lastAmBand && enabledBandsList.includes(lastAmBand)) {
+                                    targetFreq = getStoredFreqOrTune(lastAmBand, ALL_BANDS[lastAmBand]);
+                                } else {
                                     const firstEnabledAmBand = amBandKeys.find(b => enabledBandsList.includes(b));
-                                    if (firstEnabledAmBand) targetFreq = lastFreqs[firstEnabledAmBand] || ALL_BANDS[firstEnabledAmBand].tune;
+                                    if (firstEnabledAmBand) targetFreq = getStoredFreqOrTune(firstEnabledAmBand, ALL_BANDS[firstEnabledAmBand]);
                                 }
                             } else {
                                 fullSwTuningActive = false; sessionStorage.setItem(FULL_SW_MODE_KEY, 'false');
-                                targetFreq = lastFreqs[key] || ALL_BANDS[key].tune;
+                                targetFreq = getStoredFreqOrTune(key, ALL_BANDS[key]);
                             }
                             if (targetFreq !== undefined) tuneToFrequency(targetFreq);
                             updateVisualsByFrequency(getCurrentFrequencyInMHz());
@@ -4444,8 +4939,7 @@ body.et-analog-active #mm-scope-flex {
                         const btn = createBandButton(key, SW_BANDS[key], 'sw-grid-button');
                         btn.addEventListener('click', () => {
                             fullSwTuningActive = false; sessionStorage.setItem(FULL_SW_MODE_KEY, 'false');
-                            const lastFreqs = pluginConfig.ENABLE_FREQUENCY_MEMORY ? (JSON.parse(localStorage.getItem(LAST_FREQS_STORAGE_KEY)) || {}) : {};
-                            const targetFreq = lastFreqs[key] || SW_BANDS[key].tune;
+                            const targetFreq = getStoredFreqOrTune(key, SW_BANDS[key]);
                             tuneToFrequency(targetFreq);
                             updateVisualsByFrequency(getCurrentFrequencyInMHz());
                         });
@@ -4460,8 +4954,7 @@ body.et-analog-active #mm-scope-flex {
                     const fullSwButton = createBandButton('SW', { ...ALL_BANDS['SW'], displayName: 'SW' }, 'am-view-button');
                     fullSwButton.addEventListener('click', () => {
                         fullSwTuningActive = true; sessionStorage.setItem(FULL_SW_MODE_KEY, 'true');
-                        const lastFreqs = pluginConfig.ENABLE_FREQUENCY_MEMORY ? (JSON.parse(localStorage.getItem(LAST_FREQS_STORAGE_KEY)) || {}) : {};
-                        const targetFreq = lastFreqs['SW'] || ALL_BANDS['SW'].tune;
+                        const targetFreq = getStoredFreqOrTune('SW', ALL_BANDS['SW']);
                         tuneToFrequency(targetFreq);
                         updateVisualsByFrequency(getCurrentFrequencyInMHz());
                     });
@@ -4471,8 +4964,7 @@ body.et-analog-active #mm-scope-flex {
                         const btn = createBandButton(key, ALL_BANDS[key], 'am-view-button');
                         btn.addEventListener('click', () => {
                             fullSwTuningActive = false; sessionStorage.setItem(FULL_SW_MODE_KEY, 'false');
-                            const lastFreqs = pluginConfig.ENABLE_FREQUENCY_MEMORY ? (JSON.parse(localStorage.getItem(LAST_FREQS_STORAGE_KEY)) || {}) : {};
-                            const targetFreq = lastFreqs[key] || ALL_BANDS[key].tune;
+                            const targetFreq = getStoredFreqOrTune(key, ALL_BANDS[key]);
                             tuneToFrequency(targetFreq);
                             updateVisualsByFrequency(getCurrentFrequencyInMHz());
                         });
@@ -4508,18 +5000,17 @@ body.et-analog-active #mm-scope-flex {
                     });
                     mobileSwBandSelectorWrapper.appendChild(mobileSwBandSelector); antContainer.appendChild(mobileSwBandSelectorWrapper);
                     mobileSwBandSelector.addEventListener('change', (event) => {
-                    const key = event.target.value; 
-                    if (!key) return; 
-                    const data = SW_BANDS[key]; 
-                    if (!data) return;
+                        const key = event.target.value; 
+                        if (!key) return; 
+                        const data = SW_BANDS[key]; 
+                        if (!data) return;
 
-                    fullSwTuningActive = false; 
-                    sessionStorage.setItem(FULL_SW_MODE_KEY, 'false');
+                        fullSwTuningActive = false; 
+                        sessionStorage.setItem(FULL_SW_MODE_KEY, 'false');
 
-                    const lastFreqs = pluginConfig.ENABLE_FREQUENCY_MEMORY ? (JSON.parse(localStorage.getItem(LAST_FREQS_STORAGE_KEY)) || {}) : {};
-                    const targetFreq = lastFreqs[key] || data.tune;
-                    tuneToFrequency(targetFreq);
-                });
+                        const targetFreq = getStoredFreqOrTune(key, data);
+                        tuneToFrequency(targetFreq);
+                    });
                     mobileBandSelector.addEventListener('change', (event) => {
                         const key = event.target.value;
                         if (key === 'toggle-loop') {
@@ -4534,8 +5025,7 @@ body.et-analog-active #mm-scope-flex {
                         const data = ALL_BANDS[key]; if (!data) return;
                         if (key === 'SW') fullSwTuningActive = true; else fullSwTuningActive = false;
                         sessionStorage.setItem(FULL_SW_MODE_KEY, String(fullSwTuningActive));
-                        const lastFreqs = JSON.parse(localStorage.getItem(LAST_FREQS_STORAGE_KEY)) || {};
-                        const targetFreq = lastFreqs[key] || data.tune;
+                        const targetFreq = getStoredFreqOrTune(key, data);
                         tuneToFrequency(targetFreq);
                         updateVisualsByFrequency(getCurrentFrequencyInMHz());
                     });
@@ -4626,6 +5116,7 @@ body.et-analog-active #mm-scope-flex {
                 
                 // ANALOG SCALE BINDING (CLASSIC)
                 AnalogScaleEngine.updateBand(activeBandForLooping, freqInMHz, activeSwBandKey || activeMainBandKey);
+                announceBandChange(activeSwBandKey || activeMainBandKey, activeBandForLooping, freqInMHz);
 
                 if (pluginConfig.ENABLE_FREQUENCY_MEMORY) {
                     try {
@@ -4673,8 +5164,7 @@ body.et-analog-active #mm-scope-flex {
                 
                 button.addEventListener('click', () => { 
                     activeBandForLooping = bandData;
-                    const lastFreqs = pluginConfig.ENABLE_FREQUENCY_MEMORY ? (JSON.parse(localStorage.getItem(LAST_FREQS_STORAGE_KEY)) || {}) : {};
-                    const targetFreq = lastFreqs[bandKey] || safeTune; 
+                    const targetFreq = getStoredFreqOrTune(bandKey, bandData); 
                     tuneToFrequency(targetFreq);
                 });
                 return button;
@@ -4773,8 +5263,7 @@ body.et-analog-active #mm-scope-flex {
                     if (!data) return;
                     fullSwTuningActive = false; 
                     sessionStorage.setItem(FULL_SW_MODE_KEY, 'false');
-                    const lastFreqs = pluginConfig.ENABLE_FREQUENCY_MEMORY ? (JSON.parse(localStorage.getItem(LAST_FREQS_STORAGE_KEY)) || {}) : {};
-                    const targetFreq = lastFreqs[key] || data.tune;
+                    const targetFreq = getStoredFreqOrTune(key, data);
                     tuneToFrequency(targetFreq);
                 });
 
@@ -4803,8 +5292,7 @@ body.et-analog-active #mm-scope-flex {
                     fullSwTuningActive = (key === 'SW');
                     sessionStorage.setItem(FULL_SW_MODE_KEY, String(fullSwTuningActive));
                     
-                    const lastFreqs = pluginConfig.ENABLE_FREQUENCY_MEMORY ? (JSON.parse(localStorage.getItem(LAST_FREQS_STORAGE_KEY)) || {}) : {};
-                    const targetFreq = lastFreqs[key] || data.tune;
+                    const targetFreq = getStoredFreqOrTune(key, data);
                     tuneToFrequency(targetFreq);
                 });
             }
@@ -4960,15 +5448,28 @@ body.et-analog-active #mm-scope-flex {
           }, 500);
         }
 
-        console.log(`[Enhanced Tuning] v3.0 loaded successfully.`);
+        console.log(`[Enhanced Tuning] v3.2 loaded successfully.`);
     } catch (err) {
         console.error("[Enhanced Tuning] Krasj under bygging av UI:", err);
     }
   };
 
+  window.addEventListener('storage', async (e) => {
+      if (e.key === 'et_config_update_trigger') {
+          console.log("[Enhanced Tuning] Nye innstillinger lagret i Admin Panel. Oppdaterer umiddelbart...");
+          await fetchPluginConfig();
+          announceConfig('enhanced-tuning:config');
+          
+          if (typeof updateBandButtonStates === 'function') {
+              updateBandButtonStates();
+          }
+      }
+  });
+
   document.addEventListener("DOMContentLoaded", async () => {
     await fetchPluginConfig();
     if(!pluginConfig) return; 
+    announceConfig('enhanced-tuning:ready');
 
     initAdminPanel();
 
