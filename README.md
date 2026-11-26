@@ -131,7 +131,7 @@ Enhanced Tuning shares its state so other plugins don't need to read its config 
 > AM bandwidth works with all TEF6686_ESP32 firmware by Sjef Verhoeven, for example on portable units.
 > With the FM-DX-Tuner firmware by Konrad it only works on units with the 6686 (F8602) TEF chip. The 6686 (F8605) and 6687 (F8705), as in the Headless TEF, need a small firmware modification.
 
-If you are comfortable flashing your own Headless TEF, there is a guide: [Flash Headless TEF with FM-DX-Tuner-Modded.bin](https://github.com/Overland-DX/Enhanced-Tuning/wiki/Flash-Headless-TEF-with-FM%E2%80%90DX%E2%80%90Tuner%E2%80%90Modded.bin)
+If you are comfortable flashing your own Headless TEF, there is a guide: [Flash Headless TEF with FM-DX-Tuner-Modded.bin](https://github.com/Overland-DX/Enhanced-Tuning/wiki/Flash-Headless-TEF-with-FM%E2%80%90DX%E2%80%90Tuner.bin)
 
 ---
 
